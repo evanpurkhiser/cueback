@@ -128,6 +128,18 @@ its own normalized stream rather than allowing tools to compete for the RX3
 connections. The RX3 protocols are unauthenticated and belong only on the
 trusted local network.
 
+## Implementation
+
+Cueback begins as one Rust crate and binary. Rust owns network ingestion,
+session state, journaling, process supervision, and processing. Modules can be
+split into separate crates when their ownership boundaries are demonstrated by
+the implementation.
+
+Audio encoding runs in a managed FFmpeg process. Cueback validates the RX3
+framing and continuity, sends raw PCM to FFmpeg through a bounded pipe, drains
+its diagnostics, and records its exit status. FLAC is the canonical lossless
+format for capture chunks and published recordings.
+
 ## Capture model
 
 Cueback distinguishes three scopes.

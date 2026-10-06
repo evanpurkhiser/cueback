@@ -17,6 +17,18 @@ hardware may be explored later, but is not required for useful playback.
 The project is currently in the design stage. See [DESIGN.md](DESIGN.md) for
 the preliminary architecture and decisions.
 
+## Development
+
+Install the project tools and run Cueback:
+
+```console
+$ mise install
+$ cargo run
+Hello, world!
+```
+
+Run the repository checks with `prek run --all-files`.
+
 ## License
 
 Cueback is available under the [MIT License](LICENSE).

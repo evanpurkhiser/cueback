@@ -1,0 +1,11 @@
+[package]
+name = "cueback"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+description = "The flight recorder for your DJ sets"
+license = "MIT"
+repository = "https://github.com/evanpurkhiser/cueback"
+readme = "README.md"
+
+[dependencies]
