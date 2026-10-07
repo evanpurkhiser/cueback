@@ -17,6 +17,7 @@ pub async fn run(config: Config) -> Result<()> {
     let shutdown = CancellationToken::new();
     let (device_tx, device_rx) = watch::channel(None);
     let (event_tx, event_rx) = mpsc::channel(8);
+    let (control_tx, control_rx) = mpsc::channel(256);
     let mut tasks = JoinSet::new();
 
     let socket = UdpSocket::bind(config.device.announcement_bind)
@@ -35,13 +36,14 @@ pub async fn run(config: Config) -> Result<()> {
             .context("RX3 announcement listener failed")
     });
 
+    let pcm_device_rx = device_rx.clone();
     let port = config.device.pcm_port;
     let idle_timeout = config.device.pcm_idle_timeout;
     let reconnect_delay = config.device.reconnect_delay;
     let task_shutdown = shutdown.child_token();
     tasks.spawn(async move {
         rx3::pcm::supervise(
-            device_rx,
+            pcm_device_rx,
             port,
             idle_timeout,
             reconnect_delay,
@@ -52,16 +54,34 @@ pub async fn run(config: Config) -> Result<()> {
         .context("RX3 PCM supervisor failed")
     });
 
+    let port = config.device.remote_port;
+    let keepalive_interval = config.device.remote_keepalive_interval;
+    let reconnect_delay = config.device.reconnect_delay;
+    let task_shutdown = shutdown.child_token();
+    tasks.spawn(async move {
+        rx3::remote::supervise(
+            device_rx,
+            port,
+            keepalive_interval,
+            reconnect_delay,
+            control_tx,
+            task_shutdown,
+        )
+        .await
+        .context("RX3 remote-control supervisor failed")
+    });
+
     let capture = CaptureService::new(CaptureSettings {
         ffmpeg: config.recording.ffmpeg,
         recordings_dir: config.storage.recordings_dir,
         silence_timeout: config.recording.silence_timeout,
         silence_threshold: config.recording.silence_threshold,
+        timeline_pre_roll: config.recording.timeline_pre_roll,
     });
     let task_shutdown = shutdown.child_token();
     tasks.spawn(async move {
         capture
-            .run(event_rx, task_shutdown)
+            .run(event_rx, control_rx, task_shutdown)
             .await
             .context("capture service failed")
     });
