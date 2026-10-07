@@ -3,7 +3,7 @@ use std::{
     process::Stdio,
 };
 
-use chrono::Local;
+use chrono::{DateTime, Local};
 use thiserror::Error;
 use tokio::{
     fs,
@@ -74,7 +74,8 @@ impl FlacRecorder {
         recordings_dir: &Path,
         format: StreamFormat,
     ) -> Result<Self, RecorderError> {
-        let paths = RecordingPaths::new(recordings_dir, &session_name());
+        let paths =
+            RecordingPaths::new(recordings_dir, &session_name(Local::now(), Uuid::new_v4()));
         fs::create_dir_all(
             paths
                 .temporary
@@ -132,6 +133,9 @@ impl FlacRecorder {
         }
 
         fs::rename(&self.paths.temporary, &self.paths.completed).await?;
+
+        // Future capture processing runs here while the completed source still
+        // lives under `.live`, before its results are published as a session.
         fs::create_dir(&self.paths.session_dir).await?;
         fs::rename(&self.paths.completed, &self.paths.master).await?;
 
@@ -139,11 +143,11 @@ impl FlacRecorder {
     }
 }
 
-fn session_name() -> String {
-    let date = Local::now().format("%Y-%m-%d");
-    let id = Uuid::new_v4().simple().to_string();
+fn session_name(started_at: DateTime<Local>, id: Uuid) -> String {
+    let timestamp = started_at.format("%Y-%m-%d-%H%M%S");
+    let id = id.simple().to_string();
 
-    format!("session-{date}-{}", &id[..8])
+    format!("session-{timestamp}-{}", &id[..8])
 }
 
 async fn diagnostic_tail(reader: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>, std::io::Error> {
@@ -195,25 +199,45 @@ fn ffmpeg_args(format: StreamFormat) -> Vec<String> {
 mod tests {
     use std::path::{Path, PathBuf};
 
+    use chrono::{Local, TimeZone};
+    use uuid::Uuid;
+
     use crate::audio::StreamFormat;
 
-    use super::{RecordingPaths, ffmpeg_args};
+    use super::{RecordingPaths, ffmpeg_args, session_name};
 
     #[test]
     fn keeps_live_files_hidden_until_promotion() {
-        let paths = RecordingPaths::new(Path::new("/recordings"), "session-2026-10-06-a1b2c3d4");
+        let paths = RecordingPaths::new(
+            Path::new("/recordings"),
+            "session-2026-10-06-213245-a1b2c3d4",
+        );
 
         assert_eq!(
             paths.temporary,
-            PathBuf::from("/recordings/.live/session-2026-10-06-a1b2c3d4.flac.part")
+            PathBuf::from("/recordings/.live/session-2026-10-06-213245-a1b2c3d4.flac.part")
         );
         assert_eq!(
             paths.completed,
-            PathBuf::from("/recordings/.live/session-2026-10-06-a1b2c3d4.flac")
+            PathBuf::from("/recordings/.live/session-2026-10-06-213245-a1b2c3d4.flac")
         );
         assert_eq!(
             paths.master,
-            PathBuf::from("/recordings/session-2026-10-06-a1b2c3d4/master.flac")
+            PathBuf::from("/recordings/session-2026-10-06-213245-a1b2c3d4/master.flac")
+        );
+    }
+
+    #[test]
+    fn names_sessions_with_their_local_start_time() {
+        let started_at = Local
+            .with_ymd_and_hms(2026, 10, 6, 21, 32, 45)
+            .single()
+            .unwrap();
+        let id = Uuid::parse_str("a1b2c3d4-0000-0000-0000-000000000000").unwrap();
+
+        assert_eq!(
+            session_name(started_at, id),
+            "session-2026-10-06-213245-a1b2c3d4"
         );
     }
 

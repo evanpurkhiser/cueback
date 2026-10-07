@@ -229,12 +229,13 @@ proves too aggressive.
 ## Durable capture
 
 The collector transcodes PCM to FLAC as it arrives. An active recording is
-written to `.live/session-<date>-<short-id>.flac.part` beneath the configured
-recordings directory. After FFmpeg exits successfully, the file becomes a
-completed FLAC within `.live` and is immediately promoted to
-`session-<date>-<short-id>/master.flac`. Future processing can operate on the
-completed file within `.live` before promotion. A later durable-capture phase
-can introduce bounded chunks without changing the promoted layout.
+written to `.live/session-YYYY-MM-DD-HHMMSS-<short-id>.flac.part` beneath the
+configured recordings directory. After FFmpeg exits successfully, the file
+becomes a completed FLAC within `.live` and is immediately promoted to
+`session-YYYY-MM-DD-HHMMSS-<short-id>/master.flac`. Future processing can
+operate on the completed file within `.live` before promotion. A later
+durable-capture phase can introduce bounded chunks without changing the
+promoted layout.
 
 The event journal is append-only. It should survive abrupt termination and
 retain both normalized meaning and original protocol values. SQLite in WAL
