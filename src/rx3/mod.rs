@@ -7,6 +7,7 @@ use crate::device::Device;
 
 pub mod announcement;
 pub mod pcm;
+pub mod remote;
 
 /// Wait until discovery supplies a device or the caller should stop.
 async fn wait_for_device(
