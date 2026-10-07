@@ -18,29 +18,21 @@ use crate::audio::StreamFormat;
 /// Failure while encoding or promoting a live recording.
 #[derive(Debug, Error)]
 pub enum RecorderError {
-    /// A recording file or FFmpeg pipe operation failed.
     #[error("failed to manage the recording file")]
     Io(#[from] std::io::Error),
 
-    /// FFmpeg was spawned without the requested input pipe.
     #[error("FFmpeg did not expose its standard input")]
     MissingStdin,
 
-    /// FFmpeg was spawned without the requested diagnostics pipe.
     #[error("FFmpeg did not expose its standard error")]
     MissingStderr,
 
-    /// The task collecting bounded FFmpeg diagnostics failed.
     #[error("FFmpeg diagnostics task failed")]
     Diagnostics(#[from] tokio::task::JoinError),
 
-    /// FFmpeg exited unsuccessfully.
     #[error("FFmpeg failed with {status}: {diagnostics}")]
     Ffmpeg {
-        /// Process exit status returned by FFmpeg.
         status: std::process::ExitStatus,
-
-        /// Bounded tail of FFmpeg's standard error.
         diagnostics: String,
     },
 }

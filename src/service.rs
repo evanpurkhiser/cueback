@@ -29,13 +29,28 @@ pub enum ServiceError {
 
 /// Owns session detection and the active recorder for one device event stream.
 pub struct CaptureService {
+    /// Encoder executable used for each live recording.
     ffmpeg: PathBuf,
+
+    /// Root containing live artifacts and promoted session directories.
     recordings_dir: PathBuf,
+
+    /// Continuous silence required to finish an active session.
     silence_timeout: Duration,
+
+    /// Absolute signed-sample amplitude considered audible.
     silence_threshold: u16,
+
+    /// PCM format negotiated for the current device connection.
     format: Option<StreamFormat>,
+
+    /// Session state machine clocked by the current PCM stream.
     tracker: Option<SessionTracker>,
+
+    /// FFmpeg process receiving the active session, when recording.
     recorder: Option<FlacRecorder>,
+
+    /// Exclusive audio-clock frame through which PCM has reached FFmpeg.
     written_through_frame: u64,
 }
 
