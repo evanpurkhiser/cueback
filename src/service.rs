@@ -22,55 +22,58 @@ pub enum ServiceError {
     #[error(transparent)]
     Recorder(#[from] RecorderError),
 
-    /// PCM arrived before its connection established a stream format.
+    /// PCM arrived without an active audio connection.
     #[error("PCM arrived without an active audio connection")]
-    MissingFormat,
+    MissingConnection,
 }
 
-/// Owns session detection and the active recorder for one device event stream.
-pub struct CaptureService {
+/// Storage, encoder, and silence policy settings for live capture.
+#[derive(Debug)]
+pub struct CaptureSettings {
     /// Encoder executable used for each live recording.
-    ffmpeg: PathBuf,
+    pub ffmpeg: PathBuf,
 
     /// Root containing live artifacts and promoted session directories.
-    recordings_dir: PathBuf,
+    pub recordings_dir: PathBuf,
 
     /// Continuous silence required to finish an active session.
-    silence_timeout: Duration,
+    pub silence_timeout: Duration,
 
     /// Absolute signed-sample amplitude considered audible.
-    silence_threshold: u16,
+    pub silence_threshold: u16,
+}
 
-    /// PCM format negotiated for the current device connection.
-    format: Option<StreamFormat>,
+#[derive(Debug)]
+struct ConnectedStream {
+    /// PCM format negotiated for this connection.
+    format: StreamFormat,
 
-    /// Session state machine clocked by the current PCM stream.
-    tracker: Option<SessionTracker>,
-
-    /// FFmpeg process receiving the active session, when recording.
-    recorder: Option<FlacRecorder>,
+    /// Session state machine clocked by this connection.
+    tracker: SessionTracker,
 
     /// Exclusive audio-clock frame through which PCM has reached FFmpeg.
     written_through_frame: u64,
 }
 
+/// Owns session detection and the active recorder for one device event stream.
+pub struct CaptureService {
+    /// Capture policy and output locations.
+    settings: CaptureSettings,
+
+    /// FFmpeg process receiving the active session, when recording.
+    recorder: Option<FlacRecorder>,
+
+    /// State owned by the current PCM connection.
+    stream: Option<ConnectedStream>,
+}
+
 impl CaptureService {
     /// Build a capture service from storage, encoder, and silence policy settings.
-    pub fn new(
-        ffmpeg: PathBuf,
-        recordings_dir: PathBuf,
-        silence_timeout: Duration,
-        silence_threshold: u16,
-    ) -> Self {
+    pub fn new(settings: CaptureSettings) -> Self {
         Self {
-            ffmpeg,
-            recordings_dir,
-            silence_timeout,
-            silence_threshold,
-            format: None,
-            tracker: None,
+            settings,
             recorder: None,
-            written_through_frame: 0,
+            stream: None,
         }
     }
 
@@ -97,26 +100,34 @@ impl CaptureService {
 
     async fn handle(&mut self, event: Event) -> Result<(), ServiceError> {
         match event {
-            Event::AudioConnected { format, .. } => {
-                let silence_frames = duration_to_frames(self.silence_timeout, format.sample_rate);
-                self.format = Some(format);
-                self.tracker = Some(SessionTracker::new(silence_frames));
+            Event::AudioConnected { format } => {
+                let silence_frames =
+                    duration_to_frames(self.settings.silence_timeout, format.sample_rate);
+                self.stream = Some(ConnectedStream {
+                    format,
+                    tracker: SessionTracker::new(silence_frames),
+                    written_through_frame: 0,
+                });
             }
             Event::Pcm(block) => {
-                let format = self.format.ok_or(ServiceError::MissingFormat)?;
-                let observation = analyze(&block, format, self.silence_threshold)?;
-                let transition = self
-                    .tracker
+                let stream = self
+                    .stream
                     .as_mut()
-                    .ok_or(ServiceError::MissingFormat)?
-                    .observe(observation);
+                    .ok_or(ServiceError::MissingConnection)?;
+                let observation = analyze(&block, stream.format, self.settings.silence_threshold)?;
+                let transition = stream.tracker.observe(observation);
 
                 if let SessionTransition::Started {
                     audio_started_at_frame,
                 } = transition
                 {
                     self.recorder = Some(
-                        FlacRecorder::start(&self.ffmpeg, &self.recordings_dir, format).await?,
+                        FlacRecorder::start(
+                            &self.settings.ffmpeg,
+                            &self.settings.recordings_dir,
+                            stream.format,
+                        )
+                        .await?,
                     );
                     eprintln!("recording started at audio frame {audio_started_at_frame}");
                 }
@@ -133,7 +144,7 @@ impl CaptureService {
                             Err(encoder_error) => Err(encoder_error.into()),
                         };
                     }
-                    self.written_through_frame = observation.end_frame;
+                    stream.written_through_frame = observation.end_frame;
                 }
 
                 if let SessionTransition::Ended(session) = transition {
@@ -144,10 +155,9 @@ impl CaptureService {
                     );
                 }
             }
-            Event::AudioDisconnected { .. } => {
+            Event::AudioDisconnected => {
                 self.finish(SessionEndReason::Discontinuity).await?;
-                self.format = None;
-                self.tracker = None;
+                self.stream = None;
             }
         }
 
@@ -155,8 +165,8 @@ impl CaptureService {
     }
 
     async fn finish(&mut self, reason: SessionEndReason) -> Result<(), ServiceError> {
-        if let Some(tracker) = &mut self.tracker {
-            tracker.finish(self.written_through_frame, reason);
+        if let Some(stream) = &mut self.stream {
+            stream.tracker.finish(stream.written_through_frame, reason);
         }
         self.finish_recorder().await
     }
@@ -186,7 +196,27 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use super::{CaptureService, duration_to_frames};
+    use crate::{
+        audio::{PcmBlock, StreamFormat},
+        device::Event,
+    };
+
+    use super::{CaptureService, CaptureSettings, ServiceError, duration_to_frames};
+
+    const FORMAT: StreamFormat = StreamFormat {
+        sample_rate: 44_100,
+        channels: 2,
+        max_frames_per_block: 512,
+    };
+
+    fn service() -> CaptureService {
+        CaptureService::new(CaptureSettings {
+            ffmpeg: PathBuf::from("ffmpeg"),
+            recordings_dir: PathBuf::from("recordings"),
+            silence_timeout: Duration::from_secs(300),
+            silence_threshold: 0,
+        })
+    }
 
     #[test]
     fn converts_the_timeout_to_the_audio_clock() {
@@ -205,13 +235,36 @@ mod tests {
         let (_event_tx, event_rx) = mpsc::channel(1);
         let shutdown = CancellationToken::new();
         shutdown.cancel();
-        let service = CaptureService::new(
-            PathBuf::from("ffmpeg"),
-            PathBuf::from("recordings"),
-            Duration::from_secs(300),
-            0,
-        );
+        let service = service();
 
         service.run(event_rx, shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pcm_requires_an_active_connection() {
+        let error = service()
+            .handle(Event::Pcm(PcmBlock {
+                sequence: 1,
+                start_frame: 0,
+                dropped_frames: 0,
+                pcm: vec![0; 4],
+            }))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ServiceError::MissingConnection));
+    }
+
+    #[tokio::test]
+    async fn disconnect_clears_connection_state() {
+        let mut service = service();
+        service
+            .handle(Event::AudioConnected { format: FORMAT })
+            .await
+            .unwrap();
+
+        service.handle(Event::AudioDisconnected).await.unwrap();
+
+        assert!(service.stream.is_none());
     }
 }

@@ -6,7 +6,11 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{config::Config, rx3, service::CaptureService};
+use crate::{
+    config::Config,
+    rx3,
+    service::{CaptureService, CaptureSettings},
+};
 
 /// Run Cueback until interrupted or a supervised service fails.
 pub async fn run(config: Config) -> Result<()> {
@@ -48,12 +52,12 @@ pub async fn run(config: Config) -> Result<()> {
         .context("RX3 PCM supervisor failed")
     });
 
-    let capture = CaptureService::new(
-        config.recording.ffmpeg,
-        config.storage.recordings_dir,
-        config.recording.silence_timeout,
-        config.recording.silence_threshold,
-    );
+    let capture = CaptureService::new(CaptureSettings {
+        ffmpeg: config.recording.ffmpeg,
+        recordings_dir: config.storage.recordings_dir,
+        silence_timeout: config.recording.silence_timeout,
+        silence_threshold: config.recording.silence_threshold,
+    });
     let task_shutdown = shutdown.child_token();
     tasks.spawn(async move {
         capture

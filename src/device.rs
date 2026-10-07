@@ -55,9 +55,6 @@ pub struct Device {
 pub enum Event {
     /// A new PCM connection completed its format handshake.
     AudioConnected {
-        /// Monotonic connection identifier used to distinguish reconnects.
-        generation: u64,
-
         /// Format of PCM blocks for this connection.
         format: StreamFormat,
     },
@@ -66,8 +63,5 @@ pub enum Event {
     Pcm(PcmBlock),
 
     /// The active PCM connection ended.
-    AudioDisconnected {
-        /// Identifier previously emitted with [`Event::AudioConnected`].
-        generation: u64,
-    },
+    AudioDisconnected,
 }

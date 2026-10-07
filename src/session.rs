@@ -118,18 +118,17 @@ impl SessionTracker {
     }
 
     fn start(&mut self, observation: AudioObservation) -> SessionTransition {
-        let Some(started_at_frame) = observation.first_audible_frame else {
+        let Some(audible) = observation.audible else {
             return SessionTransition::None;
         };
-        let last_audible_frame = observation.last_audible_frame.unwrap_or(started_at_frame);
 
         self.state = SessionState::Recording {
-            started_at_frame,
-            last_audible_frame,
+            started_at_frame: audible.first_frame,
+            last_audible_frame: audible.last_frame,
         };
 
         SessionTransition::Started {
-            audio_started_at_frame: started_at_frame,
+            audio_started_at_frame: audible.first_frame,
         }
     }
 
@@ -139,10 +138,10 @@ impl SessionTracker {
         started_at_frame: u64,
         last_audible_frame: u64,
     ) -> SessionTransition {
-        if let Some(last_audible_frame) = observation.last_audible_frame {
+        if let Some(audible) = observation.audible {
             self.state = SessionState::Recording {
                 started_at_frame,
-                last_audible_frame,
+                last_audible_frame: audible.last_frame,
             };
 
             return SessionTransition::None;
@@ -165,20 +164,17 @@ impl SessionTracker {
 
 #[cfg(test)]
 mod tests {
-    use crate::audio::AudioObservation;
+    use crate::audio::{AudibleRange, AudioObservation};
 
     use super::{SessionEndReason, SessionState, SessionTracker, SessionTransition};
 
-    fn observation(
-        start_frame: u64,
-        end_frame: u64,
-        audible: Option<(u64, u64)>,
-    ) -> AudioObservation {
+    fn observation(end_frame: u64, audible: Option<(u64, u64)>) -> AudioObservation {
         AudioObservation {
-            start_frame,
             end_frame,
-            first_audible_frame: audible.map(|range| range.0),
-            last_audible_frame: audible.map(|range| range.1),
+            audible: audible.map(|(first_frame, last_frame)| AudibleRange {
+                first_frame,
+                last_frame,
+            }),
         }
     }
 
@@ -187,7 +183,7 @@ mod tests {
         let mut tracker = SessionTracker::new(100);
 
         assert_eq!(
-            tracker.observe(observation(0, 50, None)),
+            tracker.observe(observation(50, None)),
             SessionTransition::None
         );
         assert_eq!(tracker.state(), SessionState::Idle);
@@ -198,7 +194,7 @@ mod tests {
         let mut tracker = SessionTracker::new(100);
 
         assert_eq!(
-            tracker.observe(observation(0, 50, Some((12, 34)))),
+            tracker.observe(observation(50, Some((12, 34)))),
             SessionTransition::Started {
                 audio_started_at_frame: 12
             }
@@ -215,11 +211,11 @@ mod tests {
     #[test]
     fn renewed_audio_resets_the_silence_window() {
         let mut tracker = SessionTracker::new(100);
-        tracker.observe(observation(0, 50, Some((12, 34))));
-        tracker.observe(observation(50, 100, Some((75, 80))));
+        tracker.observe(observation(50, Some((12, 34))));
+        tracker.observe(observation(100, Some((75, 80))));
 
         assert_eq!(
-            tracker.observe(observation(100, 179, None)),
+            tracker.observe(observation(179, None)),
             SessionTransition::None
         );
         assert!(matches!(tracker.state(), SessionState::Recording { .. }));
@@ -228,14 +224,14 @@ mod tests {
     #[test]
     fn continuous_silence_ends_at_the_frame_deadline() {
         let mut tracker = SessionTracker::new(100);
-        tracker.observe(observation(0, 50, Some((12, 34))));
+        tracker.observe(observation(50, Some((12, 34))));
 
         assert_eq!(
-            tracker.observe(observation(50, 134, None)),
+            tracker.observe(observation(134, None)),
             SessionTransition::None
         );
         assert_eq!(
-            tracker.observe(observation(134, 135, None)),
+            tracker.observe(observation(135, None)),
             SessionTransition::Ended(super::CompletedSession {
                 started_at_frame: 12,
                 audio_ended_at_frame: 34,
@@ -249,7 +245,7 @@ mod tests {
     #[test]
     fn a_discontinuity_finishes_an_active_session() {
         let mut tracker = SessionTracker::new(100);
-        tracker.observe(observation(0, 50, Some((12, 34))));
+        tracker.observe(observation(50, Some((12, 34))));
 
         let completed = tracker.finish(50, SessionEndReason::Discontinuity).unwrap();
 

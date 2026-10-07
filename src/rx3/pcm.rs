@@ -202,8 +202,6 @@ pub async fn supervise(
     event_tx: mpsc::Sender<Event>,
     shutdown: CancellationToken,
 ) -> Result<(), PcmError> {
-    let mut generation = 0;
-
     loop {
         let Some(device) = wait_for_device(&mut device_rx, &shutdown).await else {
             return Ok(());
@@ -235,9 +233,7 @@ pub async fn supervise(
             }
         };
 
-        generation += 1;
-        if relay_connection(stream, idle_timeout, generation, &event_tx, &shutdown).await
-            == RelayOutcome::Stop
+        if relay_connection(stream, idle_timeout, &event_tx, &shutdown).await == RelayOutcome::Stop
         {
             return Ok(());
         }
@@ -279,14 +275,12 @@ enum RelayOutcome {
 async fn relay_connection<R: AsyncRead + Unpin>(
     mut stream: PcmStream<R>,
     idle_timeout: Duration,
-    generation: u64,
     event_tx: &mpsc::Sender<Event>,
     shutdown: &CancellationToken,
 ) -> RelayOutcome {
     if !send_event(
         event_tx,
         Event::AudioConnected {
-            generation,
             format: stream.format(),
         },
         shutdown,
@@ -316,7 +310,7 @@ async fn relay_connection<R: AsyncRead + Unpin>(
         }
     }
 
-    if !send_event(event_tx, Event::AudioDisconnected { generation }, shutdown).await {
+    if !send_event(event_tx, Event::AudioDisconnected, shutdown).await {
         return RelayOutcome::Stop;
     }
 
@@ -568,23 +562,16 @@ mod tests {
         let (event_tx, mut event_rx) = mpsc::channel(4);
         let relay_shutdown = shutdown.child_token();
         let relay = tokio::spawn(async move {
-            relay_connection(
-                stream,
-                Duration::from_secs(5),
-                1,
-                &event_tx,
-                &relay_shutdown,
-            )
-            .await
+            relay_connection(stream, Duration::from_secs(5), &event_tx, &relay_shutdown).await
         });
 
         assert!(matches!(
             event_rx.recv().await,
-            Some(Event::AudioConnected { generation: 1, .. })
+            Some(Event::AudioConnected { .. })
         ));
         assert!(matches!(
             event_rx.recv().await,
-            Some(Event::AudioDisconnected { generation: 1 })
+            Some(Event::AudioDisconnected)
         ));
 
         assert_eq!(relay.await.unwrap(), RelayOutcome::Reconnect);

@@ -182,8 +182,8 @@ Cueback distinguishes three scopes.
 
 A device run begins when the RX3 becomes reachable and ends when it powers off
 or remains unreachable beyond a reconnect grace period. It records connection
-generations, restarts, health information, and events that occur outside an
-active recording.
+state changes, health information, and events that occur outside an active
+recording.
 
 ### Live session
 
@@ -246,7 +246,7 @@ Every capture records:
 
 - protocol and schema versions;
 - RX3 firmware and executable identity;
-- connection and stream generations;
+- connection state changes;
 - FLAC chunk boundaries and hashes;
 - PCM sequence, frame, and drop information;
 - remote-control queue-drop flags;
@@ -391,7 +391,7 @@ audio sample for sample. The captured FLAC remains the authoritative playback.
 
 1. Discover the RX3, maintain its PCM connection, and record live sessions to
    FLAC using frame-clock silence detection.
-2. Persist session boundaries, connection generations, and PCM gap reporting.
+2. Persist session boundaries, connection state changes, and PCM gap reporting.
 3. Subscribe to physical control events and write an aligned durable journal.
 4. Resolve deck state and track identities through the available RX3 and
    `rbl-linkd` sources.

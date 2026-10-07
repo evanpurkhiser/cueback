@@ -51,20 +51,24 @@ impl PcmBlock {
     }
 }
 
-/// Audible range found within one PCM block.
+/// Inclusive audible frame range found within one PCM block.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AudibleRange {
+    /// First frame containing a sample above the configured threshold.
+    pub first_frame: u64,
+
+    /// Last frame containing a sample above the configured threshold.
+    pub last_frame: u64,
+}
+
+/// Audible content observed within one PCM block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AudioObservation {
-    /// Inclusive first frame covered by the block.
-    pub start_frame: u64,
-
     /// Exclusive end frame covered by the block.
     pub end_frame: u64,
 
-    /// First frame containing a sample above the configured threshold.
-    pub first_audible_frame: Option<u64>,
-
-    /// Last frame containing a sample above the configured threshold.
-    pub last_audible_frame: Option<u64>,
+    /// Range containing audible samples, or `None` when the block is silent.
+    pub audible: Option<AudibleRange>,
 }
 
 /// Failure to interpret a PCM block as complete frames.
@@ -108,20 +112,20 @@ pub fn analyze(
                     })
                     .then_some(block.start_frame + index as u64)
             });
-    let first_audible_frame = audible_frames.next();
-    let last_audible_frame = audible_frames.next_back().or(first_audible_frame);
+    let audible = audible_frames.next().map(|first_frame| AudibleRange {
+        first_frame,
+        last_frame: audible_frames.next_back().unwrap_or(first_frame),
+    });
 
     Ok(AudioObservation {
-        start_frame: block.start_frame,
         end_frame: block.end_frame(format),
-        first_audible_frame,
-        last_audible_frame,
+        audible,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PcmBlock, StreamFormat, analyze};
+    use super::{AudibleRange, PcmBlock, StreamFormat, analyze};
 
     const FORMAT: StreamFormat = StreamFormat {
         sample_rate: 44_100,
@@ -149,25 +153,34 @@ mod tests {
         let observation =
             analyze(&block(&[(0, 0), (0, 11), (-12, 0), (0, 0)]), FORMAT, 10).unwrap();
 
-        assert_eq!(observation.start_frame, 100);
         assert_eq!(observation.end_frame, 104);
-        assert_eq!(observation.first_audible_frame, Some(101));
-        assert_eq!(observation.last_audible_frame, Some(102));
+        assert_eq!(
+            observation.audible,
+            Some(AudibleRange {
+                first_frame: 101,
+                last_frame: 102,
+            })
+        );
     }
 
     #[test]
     fn treats_samples_at_the_threshold_as_silent() {
         let observation = analyze(&block(&[(10, -10)]), FORMAT, 10).unwrap();
 
-        assert_eq!(observation.first_audible_frame, None);
-        assert_eq!(observation.last_audible_frame, None);
+        assert_eq!(observation.audible, None);
     }
 
     #[test]
     fn handles_the_full_negative_sample_range() {
         let observation = analyze(&block(&[(i16::MIN, 0)]), FORMAT, i16::MAX as u16).unwrap();
 
-        assert_eq!(observation.first_audible_frame, Some(100));
+        assert_eq!(
+            observation.audible,
+            Some(AudibleRange {
+                first_frame: 100,
+                last_frame: 100,
+            })
+        );
     }
 
     #[test]
