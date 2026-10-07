@@ -143,11 +143,13 @@ canonical lossless format for capture chunks and published recordings.
 
 The initial binary has the following ownership boundaries:
 
-- `device` defines the events consumed by the capture service;
+- `device` defines supported hardware, discovered device identity, and the
+  events consumed by the capture service;
+- `cli` selects the configuration file;
 - the private `rx3` adapter parses PRO DJ LINK announcements, owns the TCP
   connection, and decodes RX3A messages;
 - `audio` owns PCM block types and audibility analysis;
-- `config` loads and validates the service's TOML configuration;
+- `config` uses Figment to load and validate the service's TOML configuration;
 - `session` implements the synchronous live-session state machine;
 - `recorder` owns the FFmpeg child process and its files;
 - `service` applies session decisions to the recorder; and
@@ -163,7 +165,8 @@ directory, RX3 connection settings, FFmpeg selection, silence detection, and
 timing are validated before any service task starts. A relative recordings path
 resolves from the configuration file's directory so service behavior does not
 depend on its working directory. Clap owns only configuration-file selection
-and standard help and version output.
+and standard help and version output; Figment owns file loading and
+deserialization.
 
 ## Capture model
 

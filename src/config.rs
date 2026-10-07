@@ -4,56 +4,55 @@ use std::{
     time::Duration,
 };
 
-use clap::{Parser, ValueHint};
+use figment::{
+    Figment,
+    providers::{Format, Toml},
+};
 use serde::Deserialize;
 use thiserror::Error;
 
-#[derive(Debug, Parser)]
-#[command(
-    name = "cueback",
-    version,
-    about = "The flight recorder for your DJ sets"
-)]
-pub struct Cli {
-    /// TOML configuration file.
-    #[arg(
-        short,
-        long,
-        default_value = "cueback.toml",
-        value_hint = ValueHint::FilePath
-    )]
-    pub config: PathBuf,
-}
-
+/// Runtime configuration loaded from the Cueback TOML file.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Recording storage paths.
     pub storage: StorageConfig,
 
+    /// Device discovery and PCM connection behavior.
     #[serde(default)]
     pub device: DeviceConfig,
 
+    /// Session detection and encoding behavior.
     #[serde(default)]
     pub recording: RecordingConfig,
 }
 
+/// Locations used while recording and promoting completed sessions.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StorageConfig {
+    /// Root directory containing `.live` and completed session directories.
     pub recordings_dir: PathBuf,
 }
 
+/// Network settings for discovering and connecting to the audio source.
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DeviceConfig {
+    /// Fixed device address, bypassing PRO DJ LINK discovery when set.
     pub device_address: Option<Ipv4Addr>,
+
+    /// Local address on which to receive PRO DJ LINK announcements.
     pub announcement_bind: SocketAddr,
 
+    /// Time after the last announcement before the device is considered offline.
     #[serde(with = "humantime_serde")]
     pub announcement_timeout: Duration,
 
+    /// TCP port exposed by the device's PCM streaming service.
     pub pcm_port: u16,
 
+    /// Delay before reconnecting after a PCM connection failure.
     #[serde(with = "humantime_serde")]
     pub reconnect_delay: Duration,
 }
@@ -72,13 +71,18 @@ impl Default for DeviceConfig {
     }
 }
 
+/// Session detection and FFmpeg settings.
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RecordingConfig {
+    /// Continuous silence required to complete an active recording.
     #[serde(with = "humantime_serde")]
     pub silence_timeout: Duration,
 
+    /// Absolute sample amplitude above which a PCM frame is audible.
     pub silence_threshold: u16,
+
+    /// FFmpeg executable used to encode the PCM stream as FLAC.
     pub ffmpeg: PathBuf,
 }
 
@@ -92,51 +96,63 @@ impl Default for RecordingConfig {
     }
 }
 
+/// Failure to load or validate Cueback's configuration.
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    #[error("failed to read configuration from {path}")]
-    Read {
+    /// Figment could not read or deserialize the TOML file.
+    #[error("failed to load configuration from {path}")]
+    Load {
+        /// Configuration path selected by the command line.
         path: PathBuf,
-        source: std::io::Error,
+
+        /// Detailed provider or deserialization failure.
+        source: Box<figment::Error>,
     },
 
-    #[error("failed to parse configuration from {path}")]
-    Parse {
-        path: PathBuf,
-        source: toml::de::Error,
-    },
-
+    /// The configured PCM port is zero.
     #[error("device.pcm_port must be greater than zero")]
     InvalidPcmPort,
 
+    /// The announcement timeout is zero.
     #[error("device.announcement_timeout must be greater than zero")]
     InvalidAnnouncementTimeout,
 
+    /// The reconnect delay is zero.
     #[error("device.reconnect_delay must be greater than zero")]
     InvalidReconnectDelay,
 
+    /// The silence timeout is zero.
     #[error("recording.silence_timeout must be greater than zero")]
     InvalidSilenceTimeout,
 
+    /// The silence threshold cannot be represented as signed 16-bit PCM.
     #[error("recording.silence_threshold cannot exceed {maximum}")]
-    InvalidSilenceThreshold { maximum: u16 },
+    InvalidSilenceThreshold {
+        /// Largest valid absolute threshold.
+        maximum: u16,
+    },
 }
 
 impl Config {
+    /// Load and validate configuration from a TOML file.
+    ///
+    /// Relative recording paths are resolved from the configuration file's
+    /// directory rather than the process working directory.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let source = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
-            path: path.to_owned(),
-            source,
-        })?;
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
 
-        Self::parse(&source, path, base_dir)
+        Self::extract(Figment::new().merge(Toml::file(path)), path, base_dir)
     }
 
+    #[cfg(test)]
     fn parse(source: &str, path: &Path, base_dir: &Path) -> Result<Self, ConfigError> {
-        let mut config: Self = toml::from_str(source).map_err(|source| ConfigError::Parse {
+        Self::extract(Figment::new().merge(Toml::string(source)), path, base_dir)
+    }
+
+    fn extract(figment: Figment, path: &Path, base_dir: &Path) -> Result<Self, ConfigError> {
+        let mut config: Self = figment.extract().map_err(|source| ConfigError::Load {
             path: path.to_owned(),
-            source,
+            source: Box::new(source),
         })?;
 
         config.storage.recordings_dir = resolve_path(base_dir, config.storage.recordings_dir);
@@ -184,21 +200,12 @@ mod tests {
         time::Duration,
     };
 
-    use clap::Parser;
-
-    use super::{Cli, Config, ConfigError};
+    use super::{Config, ConfigError};
 
     const MINIMAL: &str = r#"
         [storage]
         recordings_dir = "recordings"
     "#;
-
-    #[test]
-    fn cli_accepts_a_config_path() {
-        let cli = Cli::try_parse_from(["cueback", "--config", "/etc/cueback.toml"]).unwrap();
-
-        assert_eq!(cli.config, PathBuf::from("/etc/cueback.toml"));
-    }
 
     #[test]
     fn parses_the_example_configuration() {
@@ -259,7 +266,7 @@ mod tests {
 
         assert!(matches!(
             Config::parse(&source, Path::new("config.toml"), Path::new(".")),
-            Err(ConfigError::Parse { .. })
+            Err(ConfigError::Load { .. })
         ));
     }
 

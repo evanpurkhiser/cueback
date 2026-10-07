@@ -12,6 +12,7 @@ readme = "README.md"
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
+figment = { version = "0.10", features = ["toml"] }
 humantime-serde = "1"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
@@ -27,5 +28,4 @@ tokio = { version = "1", features = [
     "time",
 ] }
 tokio-util = "0.7"
-toml = "0.9"
 uuid = { version = "1", features = ["v4"] }

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use cueback::config::{Cli, Config};
+use cueback::{cli::Cli, config::Config};
 
 #[tokio::main]
 async fn main() -> Result<()> {
