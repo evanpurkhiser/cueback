@@ -1,9 +1,5 @@
-use std::{
-    path::{Path, PathBuf},
-    process::Stdio,
-};
+use std::{path::Path, process::Stdio};
 
-use chrono::{DateTime, Local};
 use thiserror::Error;
 use tokio::{
     fs,
@@ -11,9 +7,8 @@ use tokio::{
     process::{Child, ChildStdin, Command},
     task::JoinHandle,
 };
-use uuid::Uuid;
 
-use crate::audio::StreamFormat;
+use crate::{audio::StreamFormat, storage::SessionPaths};
 
 /// Failure while encoding or promoting a live recording.
 #[derive(Debug, Error)]
@@ -42,52 +37,20 @@ pub struct FlacRecorder {
     child: Child,
     stdin: ChildStdin,
     diagnostics: JoinHandle<Result<Vec<u8>, std::io::Error>>,
-    paths: RecordingPaths,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct RecordingPaths {
-    temporary: PathBuf,
-    completed: PathBuf,
-    session_dir: PathBuf,
-    master: PathBuf,
-}
-
-impl RecordingPaths {
-    fn new(recordings_dir: &Path, session_name: &str) -> Self {
-        let live_dir = recordings_dir.join(".live");
-        let session_dir = recordings_dir.join(session_name);
-
-        Self {
-            temporary: live_dir.join(format!("{session_name}.flac.part")),
-            completed: live_dir.join(format!("{session_name}.flac")),
-            master: session_dir.join("master.flac"),
-            session_dir,
-        }
-    }
+    paths: SessionPaths,
 }
 
 impl FlacRecorder {
     /// Spawn FFmpeg and prepare a hidden live recording for the PCM format.
     pub async fn start(
         ffmpeg: &Path,
-        recordings_dir: &Path,
+        paths: SessionPaths,
         format: StreamFormat,
     ) -> Result<Self, RecorderError> {
-        let paths =
-            RecordingPaths::new(recordings_dir, &session_name(Local::now(), Uuid::new_v4()));
-        fs::create_dir_all(
-            paths
-                .temporary
-                .parent()
-                .expect("recording path always has a parent"),
-        )
-        .await?;
-
         let mut command = Command::new(ffmpeg);
         command
             .args(ffmpeg_args(format))
-            .arg(&paths.temporary)
+            .arg(&paths.audio_part)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -114,8 +77,8 @@ impl FlacRecorder {
         Ok(())
     }
 
-    /// Drain FFmpeg and atomically promote its completed FLAC into a session directory.
-    pub async fn finish(mut self) -> Result<PathBuf, RecorderError> {
+    /// Drain FFmpeg and complete its FLAC within the live workspace.
+    pub async fn finish(mut self) -> Result<(), RecorderError> {
         if let Err(error) = self.stdin.shutdown().await
             && error.kind() != std::io::ErrorKind::BrokenPipe
         {
@@ -132,22 +95,10 @@ impl FlacRecorder {
             });
         }
 
-        fs::rename(&self.paths.temporary, &self.paths.completed).await?;
+        fs::rename(&self.paths.audio_part, &self.paths.audio_completed).await?;
 
-        // Future capture processing runs here while the completed source still
-        // lives under `.live`, before its results are published as a session.
-        fs::create_dir(&self.paths.session_dir).await?;
-        fs::rename(&self.paths.completed, &self.paths.master).await?;
-
-        Ok(self.paths.master)
+        Ok(())
     }
-}
-
-fn session_name(started_at: DateTime<Local>, id: Uuid) -> String {
-    let timestamp = started_at.format("%Y-%m-%d-%H%M");
-    let id = id.simple().to_string();
-
-    format!("session-{timestamp}-{}", &id[..8])
 }
 
 async fn diagnostic_tail(reader: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>, std::io::Error> {
@@ -197,47 +148,9 @@ fn ffmpeg_args(format: StreamFormat) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-
-    use chrono::{Local, TimeZone};
-    use uuid::Uuid;
-
     use crate::audio::StreamFormat;
 
-    use super::{RecordingPaths, ffmpeg_args, session_name};
-
-    #[test]
-    fn keeps_live_files_hidden_until_promotion() {
-        let paths =
-            RecordingPaths::new(Path::new("/recordings"), "session-2026-10-06-2132-a1b2c3d4");
-
-        assert_eq!(
-            paths.temporary,
-            PathBuf::from("/recordings/.live/session-2026-10-06-2132-a1b2c3d4.flac.part")
-        );
-        assert_eq!(
-            paths.completed,
-            PathBuf::from("/recordings/.live/session-2026-10-06-2132-a1b2c3d4.flac")
-        );
-        assert_eq!(
-            paths.master,
-            PathBuf::from("/recordings/session-2026-10-06-2132-a1b2c3d4/master.flac")
-        );
-    }
-
-    #[test]
-    fn names_sessions_with_their_local_start_time() {
-        let started_at = Local
-            .with_ymd_and_hms(2026, 10, 6, 21, 32, 45)
-            .single()
-            .unwrap();
-        let id = Uuid::parse_str("a1b2c3d4-0000-0000-0000-000000000000").unwrap();
-
-        assert_eq!(
-            session_name(started_at, id),
-            "session-2026-10-06-2132-a1b2c3d4"
-        );
-    }
+    use super::ffmpeg_args;
 
     #[test]
     fn configures_ffmpeg_for_the_announced_pcm_format() {

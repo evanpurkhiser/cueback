@@ -7,10 +7,13 @@ recordings_dir = "recordings"
 announcement_bind = "0.0.0.0:50000"
 announcement_timeout = "10s"
 pcm_port = 7355
+remote_port = 7357
+remote_keepalive_interval = "5s"
 pcm_idle_timeout = "5s"
 reconnect_delay = "2s"
 
 [recording]
 silence_timeout = "5m"
 silence_threshold = 0
+timeline_pre_roll = "10s"
 ffmpeg = "ffmpeg"

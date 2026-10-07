@@ -49,6 +49,13 @@ pub struct DeviceConfig {
     /// TCP port exposed by the device's PCM streaming service.
     pub pcm_port: u16,
 
+    /// TCP port exposed by the device's remote-control service.
+    pub remote_port: u16,
+
+    /// Maximum quiet period before probing the remote-control connection.
+    #[serde(with = "humantime_serde")]
+    pub remote_keepalive_interval: Duration,
+
     /// Maximum time a connected PCM stream may go without a complete block.
     #[serde(with = "humantime_serde")]
     pub pcm_idle_timeout: Duration,
@@ -66,6 +73,8 @@ impl Default for DeviceConfig {
                 .expect("default announcement address is valid"),
             announcement_timeout: Duration::from_secs(10),
             pcm_port: 7355,
+            remote_port: 7357,
+            remote_keepalive_interval: Duration::from_secs(5),
             pcm_idle_timeout: Duration::from_secs(5),
             reconnect_delay: Duration::from_secs(2),
         }
@@ -83,6 +92,10 @@ pub struct RecordingConfig {
     /// Absolute sample amplitude above which a PCM frame is audible.
     pub silence_threshold: u16,
 
+    /// Remote-control history retained before the first audible frame.
+    #[serde(with = "humantime_serde")]
+    pub timeline_pre_roll: Duration,
+
     /// FFmpeg executable used to encode the PCM stream as FLAC.
     pub ffmpeg: PathBuf,
 }
@@ -92,6 +105,7 @@ impl Default for RecordingConfig {
         Self {
             silence_timeout: Duration::from_secs(300),
             silence_threshold: 0,
+            timeline_pre_roll: Duration::from_secs(10),
             ffmpeg: PathBuf::from("ffmpeg"),
         }
     }
@@ -114,6 +128,14 @@ pub enum ConfigError {
     #[error("device.pcm_port must be greater than zero")]
     InvalidPcmPort,
 
+    /// The configured remote-control port is zero.
+    #[error("device.remote_port must be greater than zero")]
+    InvalidRemotePort,
+
+    /// The remote-control keepalive interval is zero.
+    #[error("device.remote_keepalive_interval must be greater than zero")]
+    InvalidRemoteKeepaliveInterval,
+
     /// The announcement timeout is zero.
     #[error("device.announcement_timeout must be greater than zero")]
     InvalidAnnouncementTimeout,
@@ -129,6 +151,10 @@ pub enum ConfigError {
     /// The silence timeout is zero.
     #[error("recording.silence_timeout must be greater than zero")]
     InvalidSilenceTimeout,
+
+    /// The timeline pre-roll duration is zero.
+    #[error("recording.timeline_pre_roll must be greater than zero")]
+    InvalidTimelinePreRoll,
 
     /// The silence threshold cannot be represented as signed 16-bit PCM.
     #[error("recording.silence_threshold cannot exceed {maximum}")]
@@ -170,6 +196,12 @@ impl Config {
         if self.device.pcm_port == 0 {
             return Err(ConfigError::InvalidPcmPort);
         }
+        if self.device.remote_port == 0 {
+            return Err(ConfigError::InvalidRemotePort);
+        }
+        if self.device.remote_keepalive_interval.is_zero() {
+            return Err(ConfigError::InvalidRemoteKeepaliveInterval);
+        }
         if self.device.announcement_timeout.is_zero() {
             return Err(ConfigError::InvalidAnnouncementTimeout);
         }
@@ -181,6 +213,9 @@ impl Config {
         }
         if self.recording.silence_timeout.is_zero() {
             return Err(ConfigError::InvalidSilenceTimeout);
+        }
+        if self.recording.timeline_pre_roll.is_zero() {
+            return Err(ConfigError::InvalidTimelinePreRoll);
         }
         if self.recording.silence_threshold > i16::MAX as u16 {
             return Err(ConfigError::InvalidSilenceThreshold {
@@ -234,8 +269,14 @@ mod tests {
             PathBuf::from("/srv/cueback/recordings")
         );
         assert_eq!(config.device.pcm_port, 7355);
+        assert_eq!(config.device.remote_port, 7357);
+        assert_eq!(
+            config.device.remote_keepalive_interval,
+            Duration::from_secs(5)
+        );
         assert_eq!(config.device.pcm_idle_timeout, Duration::from_secs(5));
         assert_eq!(config.recording.silence_timeout, Duration::from_secs(300));
+        assert_eq!(config.recording.timeline_pre_roll, Duration::from_secs(10));
     }
 
     #[test]
@@ -247,11 +288,13 @@ mod tests {
 
                 [device]
                 announcement_timeout = "15s"
+                remote_keepalive_interval = "6s"
                 pcm_idle_timeout = "8s"
 
                 [recording]
                 silence_timeout = "2m 30s"
                 silence_threshold = 8
+                timeline_pre_roll = "12s"
             "#,
             Path::new("config.toml"),
             Path::new("."),
@@ -259,9 +302,14 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.device.announcement_timeout, Duration::from_secs(15));
+        assert_eq!(
+            config.device.remote_keepalive_interval,
+            Duration::from_secs(6)
+        );
         assert_eq!(config.device.pcm_idle_timeout, Duration::from_secs(8));
         assert_eq!(config.recording.silence_timeout, Duration::from_secs(150));
         assert_eq!(config.recording.silence_threshold, 8);
+        assert_eq!(config.recording.timeline_pre_roll, Duration::from_secs(12));
     }
 
     #[test]
