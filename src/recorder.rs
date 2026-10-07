@@ -144,7 +144,7 @@ impl FlacRecorder {
 }
 
 fn session_name(started_at: DateTime<Local>, id: Uuid) -> String {
-    let timestamp = started_at.format("%Y-%m-%d-%H%M%S");
+    let timestamp = started_at.format("%Y-%m-%d-%H%M");
     let id = id.simple().to_string();
 
     format!("session-{timestamp}-{}", &id[..8])
@@ -208,22 +208,20 @@ mod tests {
 
     #[test]
     fn keeps_live_files_hidden_until_promotion() {
-        let paths = RecordingPaths::new(
-            Path::new("/recordings"),
-            "session-2026-10-06-213245-a1b2c3d4",
-        );
+        let paths =
+            RecordingPaths::new(Path::new("/recordings"), "session-2026-10-06-2132-a1b2c3d4");
 
         assert_eq!(
             paths.temporary,
-            PathBuf::from("/recordings/.live/session-2026-10-06-213245-a1b2c3d4.flac.part")
+            PathBuf::from("/recordings/.live/session-2026-10-06-2132-a1b2c3d4.flac.part")
         );
         assert_eq!(
             paths.completed,
-            PathBuf::from("/recordings/.live/session-2026-10-06-213245-a1b2c3d4.flac")
+            PathBuf::from("/recordings/.live/session-2026-10-06-2132-a1b2c3d4.flac")
         );
         assert_eq!(
             paths.master,
-            PathBuf::from("/recordings/session-2026-10-06-213245-a1b2c3d4/master.flac")
+            PathBuf::from("/recordings/session-2026-10-06-2132-a1b2c3d4/master.flac")
         );
     }
 
@@ -237,7 +235,7 @@ mod tests {
 
         assert_eq!(
             session_name(started_at, id),
-            "session-2026-10-06-213245-a1b2c3d4"
+            "session-2026-10-06-2132-a1b2c3d4"
         );
     }
 

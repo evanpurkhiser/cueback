@@ -229,10 +229,10 @@ proves too aggressive.
 ## Durable capture
 
 The collector transcodes PCM to FLAC as it arrives. An active recording is
-written to `.live/session-YYYY-MM-DD-HHMMSS-<short-id>.flac.part` beneath the
+written to `.live/session-YYYY-MM-DD-HHMM-<short-id>.flac.part` beneath the
 configured recordings directory. After FFmpeg exits successfully, the file
 becomes a completed FLAC within `.live` and is immediately promoted to
-`session-YYYY-MM-DD-HHMMSS-<short-id>/master.flac`. Future processing can
+`session-YYYY-MM-DD-HHMM-<short-id>/master.flac`. Future processing can
 operate on the completed file within `.live` before promotion. A later
 durable-capture phase can introduce bounded chunks without changing the
 promoted layout.

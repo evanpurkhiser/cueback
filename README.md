@@ -34,7 +34,7 @@ configuration file's directory. Use `--config` to select a file other than
 `cueback.toml`.
 
 Active files remain under `recordings/.live`. A completed recording is promoted
-to `recordings/session-YYYY-MM-DD-HHMMSS-<short-id>/master.flac`.
+to `recordings/session-YYYY-MM-DD-HHMM-<short-id>/master.flac`.
 
 Run the repository checks with `prek run --all-files`.
 
