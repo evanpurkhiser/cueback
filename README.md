@@ -6,6 +6,15 @@ Cueback automatically records DJ performances from an XDJ-RX3. It preserves
 the lossless master audio, the tracks that were heard, and a timeline of the
 controls and deck state throughout the performance.
 
+> [!NOTE]
+> Cueback is currently designed specifically for an XDJ-RX3 running the
+> [`rx3-toolkit` PCM streaming firmware](https://github.com/evanpurkhiser/rx3-toolkit/pull/9)
+> and, for wireless networking,
+> [native USB Wi-Fi support](https://github.com/evanpurkhiser/rx3-toolkit/pull/14).
+> An Ethernet module can provide networking instead. A future version will use
+> [RX3 remote control](https://github.com/evanpurkhiser/rx3-toolkit/pull/15)
+> to capture physical control actions for the timeline log.
+
 While the RX3 is available, Cueback listens to its live PCM output. The first
 audible frame starts a recording, and a configurable period of continuous
 silence ends it. Each recording is streamed directly to a lossless FLAC. Later
