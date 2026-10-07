@@ -4,8 +4,6 @@
 recordings_dir = "recordings"
 
 [device]
-# Omit device_address to discover the XDJ-RX3 from PRO DJ LINK announcements.
-# device_address = "10.0.0.200"
 announcement_bind = "0.0.0.0:50000"
 announcement_timeout = "10s"
 pcm_port = 7355

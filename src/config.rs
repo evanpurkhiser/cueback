@@ -1,5 +1,5 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr},
+    net::SocketAddr,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -39,9 +39,6 @@ pub struct StorageConfig {
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DeviceConfig {
-    /// Fixed device address, bypassing PRO DJ LINK discovery when set.
-    pub device_address: Option<Ipv4Addr>,
-
     /// Local address on which to receive PRO DJ LINK announcements.
     pub announcement_bind: SocketAddr,
 
@@ -64,7 +61,6 @@ pub struct DeviceConfig {
 impl Default for DeviceConfig {
     fn default() -> Self {
         Self {
-            device_address: None,
             announcement_bind: "0.0.0.0:50000"
                 .parse()
                 .expect("default announcement address is valid"),
@@ -207,7 +203,6 @@ fn resolve_path(base_dir: &Path, path: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use std::{
-        net::Ipv4Addr,
         path::{Path, PathBuf},
         time::Duration,
     };
@@ -238,7 +233,6 @@ mod tests {
             config.storage.recordings_dir,
             PathBuf::from("/srv/cueback/recordings")
         );
-        assert_eq!(config.device.device_address, None);
         assert_eq!(config.device.pcm_port, 7355);
         assert_eq!(config.device.pcm_idle_timeout, Duration::from_secs(5));
         assert_eq!(config.recording.silence_timeout, Duration::from_secs(300));
@@ -252,7 +246,6 @@ mod tests {
                 recordings_dir = "/var/lib/cueback/recordings"
 
                 [device]
-                device_address = "10.0.0.42"
                 announcement_timeout = "15s"
                 pcm_idle_timeout = "8s"
 
@@ -265,10 +258,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            config.device.device_address,
-            Some(Ipv4Addr::new(10, 0, 0, 42))
-        );
         assert_eq!(config.device.announcement_timeout, Duration::from_secs(15));
         assert_eq!(config.device.pcm_idle_timeout, Duration::from_secs(8));
         assert_eq!(config.recording.silence_timeout, Duration::from_secs(150));

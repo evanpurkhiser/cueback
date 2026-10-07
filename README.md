@@ -27,7 +27,7 @@ $ cp cueback.example.toml cueback.toml
 $ cargo run
 ```
 
-Cueback discovers the RX3 from its PRO DJ LINK announcements by default. The
+Cueback discovers the RX3 from its PRO DJ LINK announcements. The
 configuration defines the recordings directory, RX3 connection behavior, and
 live-session timing. A relative recordings path is resolved from the
 configuration file's directory. Use `--config` to select a file other than

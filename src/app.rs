@@ -1,5 +1,3 @@
-use std::net::Ipv4Addr;
-
 use anyhow::{Context, Result, anyhow};
 use tokio::{
     net::UdpSocket,
@@ -8,37 +6,30 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    config::Config,
-    device::{Device, SupportedDevice},
-    rx3,
-    service::CaptureService,
-};
+use crate::{config::Config, rx3, service::CaptureService};
 
 /// Run Cueback until interrupted or a supervised service fails.
 pub async fn run(config: Config) -> Result<()> {
     let shutdown = CancellationToken::new();
-    let (device_tx, device_rx) = watch::channel(config.device.device_address.map(fixed_device));
+    let (device_tx, device_rx) = watch::channel(None);
     let (event_tx, event_rx) = mpsc::channel(8);
     let mut tasks = JoinSet::new();
 
-    if config.device.device_address.is_none() {
-        let socket = UdpSocket::bind(config.device.announcement_bind)
+    let socket = UdpSocket::bind(config.device.announcement_bind)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to bind announcement listener to {}",
+                config.device.announcement_bind
+            )
+        })?;
+    let timeout = config.device.announcement_timeout;
+    let task_shutdown = shutdown.child_token();
+    tasks.spawn(async move {
+        rx3::announcement::watch_rx3(socket, timeout, device_tx, task_shutdown)
             .await
-            .with_context(|| {
-                format!(
-                    "failed to bind announcement listener to {}",
-                    config.device.announcement_bind
-                )
-            })?;
-        let timeout = config.device.announcement_timeout;
-        let shutdown = shutdown.child_token();
-        tasks.spawn(async move {
-            rx3::announcement::watch_rx3(socket, timeout, device_tx, shutdown)
-                .await
-                .context("RX3 announcement listener failed")
-        });
-    }
+            .context("RX3 announcement listener failed")
+    });
 
     let port = config.device.pcm_port;
     let idle_timeout = config.device.pcm_idle_timeout;
@@ -107,14 +98,4 @@ async fn shutdown_signal() -> std::io::Result<()> {
 
     #[cfg(not(unix))]
     tokio::signal::ctrl_c().await
-}
-
-fn fixed_device(ip_address: Ipv4Addr) -> Device {
-    Device {
-        model: SupportedDevice::XdjRx3,
-        id: 0,
-        kind: 0,
-        mac_address: [0; 6],
-        ip_address,
-    }
 }
