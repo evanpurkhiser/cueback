@@ -15,27 +15,37 @@ use uuid::Uuid;
 
 use crate::audio::StreamFormat;
 
+/// Failure while encoding or promoting a live recording.
 #[derive(Debug, Error)]
 pub enum RecorderError {
+    /// A recording file or FFmpeg pipe operation failed.
     #[error("failed to manage the recording file")]
     Io(#[from] std::io::Error),
 
+    /// FFmpeg was spawned without the requested input pipe.
     #[error("FFmpeg did not expose its standard input")]
     MissingStdin,
 
+    /// FFmpeg was spawned without the requested diagnostics pipe.
     #[error("FFmpeg did not expose its standard error")]
     MissingStderr,
 
+    /// The task collecting bounded FFmpeg diagnostics failed.
     #[error("FFmpeg diagnostics task failed")]
     Diagnostics(#[from] tokio::task::JoinError),
 
+    /// FFmpeg exited unsuccessfully.
     #[error("FFmpeg failed with {status}: {diagnostics}")]
     Ffmpeg {
+        /// Process exit status returned by FFmpeg.
         status: std::process::ExitStatus,
+
+        /// Bounded tail of FFmpeg's standard error.
         diagnostics: String,
     },
 }
 
+/// One managed FFmpeg process receiving PCM and writing a live FLAC file.
 pub struct FlacRecorder {
     child: Child,
     stdin: ChildStdin,
@@ -66,6 +76,7 @@ impl RecordingPaths {
 }
 
 impl FlacRecorder {
+    /// Spawn FFmpeg and prepare a hidden live recording for the PCM format.
     pub async fn start(
         ffmpeg: &Path,
         recordings_dir: &Path,
@@ -104,11 +115,13 @@ impl FlacRecorder {
         })
     }
 
+    /// Append PCM bytes to the active encoder.
     pub async fn write(&mut self, pcm: &[u8]) -> Result<(), RecorderError> {
         self.stdin.write_all(pcm).await?;
         Ok(())
     }
 
+    /// Drain FFmpeg and atomically promote its completed FLAC into a session directory.
     pub async fn finish(mut self) -> Result<PathBuf, RecorderError> {
         if let Err(error) = self.stdin.shutdown().await
             && error.kind() != std::io::ErrorKind::BrokenPipe

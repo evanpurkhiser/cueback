@@ -11,18 +11,23 @@ use crate::{
     session::{SessionEndReason, SessionTracker, SessionTransition},
 };
 
+/// Failure while translating device events into a recording.
 #[derive(Debug, Error)]
 pub enum ServiceError {
+    /// PCM analysis failed.
     #[error(transparent)]
     Analyze(#[from] AnalyzeError),
 
+    /// FLAC recording or promotion failed.
     #[error(transparent)]
     Recorder(#[from] RecorderError),
 
+    /// PCM arrived before its connection established a stream format.
     #[error("PCM arrived without an active audio connection")]
     MissingFormat,
 }
 
+/// Owns session detection and the active recorder for one device event stream.
 pub struct CaptureService {
     ffmpeg: PathBuf,
     recordings_dir: PathBuf,
@@ -35,6 +40,7 @@ pub struct CaptureService {
 }
 
 impl CaptureService {
+    /// Build a capture service from storage, encoder, and silence policy settings.
     pub fn new(
         ffmpeg: PathBuf,
         recordings_dir: PathBuf,
@@ -53,6 +59,7 @@ impl CaptureService {
         }
     }
 
+    /// Consume device events until cancellation, finalizing any active recording.
     pub async fn run(
         mut self,
         mut events: mpsc::Receiver<Event>,

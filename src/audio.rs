@@ -1,52 +1,87 @@
 use thiserror::Error;
 
+/// Bytes occupied by one signed 16-bit PCM sample.
 pub const SAMPLE_WIDTH: usize = size_of::<i16>();
 
+/// PCM properties negotiated when the audio stream connects.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StreamFormat {
+    /// Frames per second for each channel.
     pub sample_rate: u32,
+
+    /// Number of interleaved channels in each frame.
     pub channels: u16,
+
+    /// Largest block the sender promised to transmit.
     pub max_frames_per_block: u32,
 }
 
 impl StreamFormat {
+    /// Number of bytes occupied by one interleaved audio frame.
     pub fn frame_bytes(self) -> usize {
         usize::from(self.channels) * SAMPLE_WIDTH
     }
 }
 
+/// A timestamped block of PCM from one device connection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PcmBlock {
+    /// Sender-assigned sequence number.
     pub sequence: u32,
+
+    /// Absolute audio-clock frame at which this block begins.
     pub start_frame: u64,
+
+    /// Frames the sender dropped immediately before this block.
     pub dropped_frames: u32,
+
+    /// Interleaved signed 16-bit little-endian samples.
     pub pcm: Vec<u8>,
 }
 
 impl PcmBlock {
+    /// Number of complete audio frames in this block.
     pub fn frame_count(&self, format: StreamFormat) -> u64 {
         (self.pcm.len() / format.frame_bytes()) as u64
     }
 
+    /// Exclusive end position on the device audio clock.
     pub fn end_frame(&self, format: StreamFormat) -> u64 {
         self.start_frame.saturating_add(self.frame_count(format))
     }
 }
 
+/// Audible range found within one PCM block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AudioObservation {
+    /// Inclusive first frame covered by the block.
     pub start_frame: u64,
+
+    /// Exclusive end frame covered by the block.
     pub end_frame: u64,
+
+    /// First frame containing a sample above the configured threshold.
     pub first_audible_frame: Option<u64>,
+
+    /// Last frame containing a sample above the configured threshold.
     pub last_audible_frame: Option<u64>,
 }
 
+/// Failure to interpret a PCM block as complete frames.
 #[derive(Debug, Error)]
 pub enum AnalyzeError {
+    /// The byte count does not contain only complete interleaved frames.
     #[error("PCM block has {actual} bytes, which is not aligned to {frame_bytes}-byte frames")]
-    Misaligned { actual: usize, frame_bytes: usize },
+    Misaligned {
+        /// Bytes present in the block.
+        actual: usize,
+
+        /// Bytes required for each complete frame.
+        frame_bytes: usize,
+    },
 }
 
+/// Locate the audible frame range in a signed 16-bit PCM block.
 pub fn analyze(
     block: &PcmBlock,
     format: StreamFormat,

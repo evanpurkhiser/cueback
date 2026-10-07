@@ -1,36 +1,67 @@
 use crate::audio::AudioObservation;
 
+/// Whether the current audio stream has an active live session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionState {
+    /// No audible PCM has started a session.
     Idle,
+
+    /// A session is active and may currently be in its trailing silence window.
     Recording {
+        /// First audible frame in the session.
         started_at_frame: u64,
+
+        /// Most recent audible frame observed in the session.
         last_audible_frame: u64,
     },
 }
 
+/// Condition that completed a live session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionEndReason {
+    /// The configured duration of continuous silence elapsed.
     Silence,
+
+    /// The PCM connection ended or restarted.
     Discontinuity,
+
+    /// Cueback was asked to shut down.
     Shutdown,
 }
 
+/// Audio-clock boundaries recorded when a live session completes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CompletedSession {
+    /// First audible frame in the session.
     pub started_at_frame: u64,
+
+    /// Last audible frame before trailing silence.
     pub audio_ended_at_frame: u64,
+
+    /// Frame through which PCM was retained in the recording.
     pub recording_ended_at_frame: u64,
+
+    /// Condition that completed the session.
     pub reason: SessionEndReason,
 }
 
+/// Decision produced from one block-level audio observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionTransition {
+    /// The existing session state continues.
     None,
-    Started { audio_started_at_frame: u64 },
+
+    /// Audible PCM started a new session.
+    Started {
+        /// First audible frame in the new session.
+        audio_started_at_frame: u64,
+    },
+
+    /// An active session reached an end condition.
     Ended(CompletedSession),
 }
 
+/// Stateful silence policy operating entirely on the device audio clock.
 #[derive(Debug)]
 pub struct SessionTracker {
     silence_frames: u64,
@@ -38,6 +69,7 @@ pub struct SessionTracker {
 }
 
 impl SessionTracker {
+    /// Create a tracker with a trailing-silence duration expressed in frames.
     pub fn new(silence_frames: u64) -> Self {
         Self {
             silence_frames,
@@ -45,10 +77,12 @@ impl SessionTracker {
         }
     }
 
+    /// Return the current live-session state.
     pub fn state(&self) -> SessionState {
         self.state
     }
 
+    /// Apply one contiguous audio observation and return any state transition.
     pub fn observe(&mut self, observation: AudioObservation) -> SessionTransition {
         match self.state {
             SessionState::Idle => self.start(observation),
@@ -59,6 +93,7 @@ impl SessionTracker {
         }
     }
 
+    /// Complete the active session for an external end condition.
     pub fn finish(
         &mut self,
         recording_ended_at_frame: u64,
