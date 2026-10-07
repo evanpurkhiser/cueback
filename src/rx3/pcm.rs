@@ -1,3 +1,11 @@
+//! Decoder and connection supervisor for the RX3A PCM stream exposed by
+//! `rbl-linkd`.
+//!
+//! Each TCP connection starts with a configuration message and then carries
+//! timestamped blocks of interleaved signed 16-bit little-endian PCM. Integer
+//! fields in the RX3A envelope and configuration payload use network byte
+//! order.
+
 use std::{io::ErrorKind, net::SocketAddr, time::Duration};
 
 use thiserror::Error;
@@ -22,66 +30,105 @@ const HEADER_SIZE: usize = 28;
 const CONFIG_SIZE: usize = 12;
 const MAX_PAYLOAD: usize = 1024 * 1024;
 
+/// Failure to decode or receive an RX3A PCM stream.
 #[derive(Debug, Error)]
 pub enum PcmError {
+    /// The underlying TCP stream failed.
     #[error("PCM stream I/O failed")]
     Io(#[from] std::io::Error),
 
+    /// A message does not begin with the RX3A protocol marker.
     #[error("message does not start with RX3A")]
     InvalidMagic,
 
+    /// The sender uses an RX3A protocol version this decoder does not support.
     #[error("unsupported RX3A version {0}")]
     UnsupportedVersion(u8),
 
+    /// The message type is neither stream configuration nor PCM.
     #[error("unsupported RX3A message type {0}")]
     UnsupportedMessage(u8),
 
+    /// The declared payload exceeds the allocation safety limit.
     #[error("PCM payload is too large: {0} bytes")]
     PayloadTooLarge(usize),
 
+    /// A stream configuration payload has an unexpected byte length.
     #[error("invalid stream config length {0}")]
     InvalidConfigLength(usize),
 
+    /// The announced sample rate is outside the accepted audio range.
     #[error("invalid sample rate {0}")]
     InvalidSampleRate(u32),
 
+    /// The announced channel count is outside the accepted audio range.
     #[error("invalid channel count {0}")]
     InvalidChannels(u16),
 
+    /// The announced sample encoding is not signed 16-bit little-endian PCM.
     #[error("unsupported sample format {0}")]
     UnsupportedSampleFormat(u16),
 
+    /// The announced maximum block size is zero or implausibly large.
     #[error("invalid maximum frames per block {0}")]
     InvalidMaxFrames(u32),
 
+    /// The connection sent audio before declaring its stream format.
     #[error("PCM arrived before the stream config")]
     MissingConfig,
 
+    /// A repeated configuration message disagrees with the initial handshake.
     #[error("stream config changed during a connection")]
     ConfigChanged,
 
+    /// PCM bytes do not contain only complete interleaved frames.
     #[error("PCM payload has {actual} bytes, expected complete {frame_bytes}-byte frames")]
-    MisalignedPcm { actual: usize, frame_bytes: usize },
+    MisalignedPcm {
+        /// Bytes present in the payload.
+        actual: usize,
 
+        /// Bytes required for each complete frame.
+        frame_bytes: usize,
+    },
+
+    /// A PCM message exceeds the block size promised during the handshake.
     #[error("PCM payload has {actual} frames, exceeding the configured maximum {maximum}")]
-    TooManyFrames { actual: usize, maximum: u32 },
+    TooManyFrames {
+        /// Frames present in the payload.
+        actual: usize,
+
+        /// Maximum frames declared by the sender.
+        maximum: u32,
+    },
 }
 
+/// One decoded RX3A envelope before message-specific validation.
 #[derive(Debug)]
 struct Message {
+    /// RX3A message type.
     kind: u8,
+
+    /// Sender-assigned message sequence number.
     sequence: u32,
+
+    /// Absolute start position on the sender's audio clock.
     timestamp_frames: u64,
+
+    /// Frames omitted by the sender immediately before this message.
     dropped_frames: u32,
+
+    /// Message body with the envelope removed.
     payload: Vec<u8>,
 }
 
+/// A handshaken RX3A stream with an invariant PCM format.
 pub struct PcmStream<R> {
     reader: R,
     format: StreamFormat,
 }
 
 impl<R: AsyncRead + Unpin> PcmStream<R> {
+    /// Read and validate the mandatory configuration message that opens a stream.
     pub async fn handshake(mut reader: R) -> Result<Self, PcmError> {
         let message = read_message(&mut reader).await?.ok_or_else(|| {
             PcmError::Io(std::io::Error::new(
@@ -100,10 +147,15 @@ impl<R: AsyncRead + Unpin> PcmStream<R> {
         }
     }
 
+    /// Return the PCM format established by the opening configuration message.
     pub fn format(&self) -> StreamFormat {
         self.format
     }
 
+    /// Decode the next PCM block, validating repeated configuration messages.
+    ///
+    /// A clean TCP close before the next envelope returns `Ok(None)`. A close
+    /// partway through an envelope or payload is reported as an I/O error.
     pub async fn next_block(&mut self) -> Result<Option<PcmBlock>, PcmError> {
         loop {
             let Some(message) = read_message(&mut self.reader).await? else {
@@ -130,6 +182,13 @@ impl<R: AsyncRead + Unpin> PcmStream<R> {
     }
 }
 
+/// Maintain the PCM connection for the currently announced device.
+///
+/// Events for each connection are emitted in strict order: `AudioConnected`,
+/// zero or more `Pcm` blocks, then `AudioDisconnected`. An established stream
+/// remains authoritative while it delivers data even if announcement packets
+/// temporarily stop. Cancellation ends the task without a disconnect event;
+/// the capture service handles that path as application shutdown.
 pub async fn supervise(
     mut device_rx: watch::Receiver<Option<Device>>,
     port: u16,
@@ -235,6 +294,11 @@ async fn wait_to_retry(delay: Duration, shutdown: &CancellationToken) {
     }
 }
 
+/// Read one length-prefixed RX3A message from the byte stream.
+///
+/// The fixed header is laid out as magic (bytes 0–3), version (4), message type
+/// (5), reserved bytes (6–7), sequence (8–11), payload size (12–15), audio
+/// timestamp (16–23), and dropped-frame count (24–27).
 async fn read_message<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<Message>, PcmError> {
     let mut header = [0; HEADER_SIZE];
     match reader.read_exact(&mut header[..1]).await {
@@ -271,6 +335,10 @@ async fn read_message<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<Mes
     }))
 }
 
+/// Decode and constrain the connection-opening configuration payload.
+///
+/// The payload contains sample rate (bytes 0–3), channel count (4–5), sample
+/// format (6–7), and maximum frames per block (8–11).
 fn decode_config(payload: &[u8]) -> Result<StreamFormat, PcmError> {
     if payload.len() != CONFIG_SIZE {
         return Err(PcmError::InvalidConfigLength(payload.len()));
@@ -301,6 +369,7 @@ fn decode_config(payload: &[u8]) -> Result<StreamFormat, PcmError> {
     })
 }
 
+/// Check a PCM payload against the format negotiated during the handshake.
 fn validate_pcm(payload: &[u8], format: StreamFormat) -> Result<(), PcmError> {
     let frame_bytes = format.frame_bytes();
     if !payload.len().is_multiple_of(frame_bytes) {
