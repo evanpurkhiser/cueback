@@ -10,10 +10,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     config::Config,
-    rx3::{self, announcement::Device},
+    device::{Device, SupportedDevice},
+    rx3,
     service::CaptureService,
 };
 
+/// Run Cueback until interrupted or a supervised service fails.
 pub async fn run(config: Config) -> Result<()> {
     let shutdown = CancellationToken::new();
     let (device_tx, device_rx) = watch::channel(config.device.device_address.map(fixed_device));
@@ -101,7 +103,7 @@ async fn shutdown_signal() -> std::io::Result<()> {
 
 fn fixed_device(ip_address: Ipv4Addr) -> Device {
     Device {
-        name: "XDJ-RX3".to_owned(),
+        model: SupportedDevice::XdjRx3,
         id: 0,
         kind: 0,
         mac_address: [0; 6],

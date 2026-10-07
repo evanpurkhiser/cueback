@@ -10,10 +10,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     audio::{PcmBlock, StreamFormat},
-    device::Event,
+    device::{Device, Event},
 };
-
-use super::announcement::Device;
 
 const MAGIC: &[u8; 4] = b"RX3A";
 const VERSION: u8 = 1;
