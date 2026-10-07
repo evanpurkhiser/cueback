@@ -1,5 +1,7 @@
 # Cueback
 
+[![Build Status](https://github.com/evanpurkhiser/cueback/actions/workflows/ci.yml/badge.svg)](https://github.com/evanpurkhiser/cueback/actions/workflows/ci.yml)
+
 Cueback automatically records DJ performances from an XDJ-RX3. It preserves
 the lossless master audio, the tracks that were heard, and a timeline of the
 controls and deck state throughout the performance.
