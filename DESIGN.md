@@ -160,6 +160,12 @@ cancellation token coordinates graceful shutdown across the long-lived tasks.
 Audio analysis and session policy remain synchronous and independent of the
 async runtime.
 
+The PCM connection has its own idle watchdog because the source sends blocks
+continuously, including blocks containing digital silence. If no complete block
+arrives before the configured deadline, the adapter emits a disconnect and
+reconnects. This recovers from a half-open TCP connection without conflating
+transport health with the longer musical-silence policy.
+
 Runtime settings live in a TOML file selected with `--config`. The recordings
 directory, RX3 connection settings, FFmpeg selection, silence detection, and
 timing are validated before any service task starts. A relative recordings path

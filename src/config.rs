@@ -52,6 +52,10 @@ pub struct DeviceConfig {
     /// TCP port exposed by the device's PCM streaming service.
     pub pcm_port: u16,
 
+    /// Maximum time a connected PCM stream may go without a complete block.
+    #[serde(with = "humantime_serde")]
+    pub pcm_idle_timeout: Duration,
+
     /// Delay before reconnecting after a PCM connection failure.
     #[serde(with = "humantime_serde")]
     pub reconnect_delay: Duration,
@@ -66,6 +70,7 @@ impl Default for DeviceConfig {
                 .expect("default announcement address is valid"),
             announcement_timeout: Duration::from_secs(10),
             pcm_port: 7355,
+            pcm_idle_timeout: Duration::from_secs(5),
             reconnect_delay: Duration::from_secs(2),
         }
     }
@@ -117,6 +122,10 @@ pub enum ConfigError {
     #[error("device.announcement_timeout must be greater than zero")]
     InvalidAnnouncementTimeout,
 
+    /// The PCM idle timeout is zero.
+    #[error("device.pcm_idle_timeout must be greater than zero")]
+    InvalidPcmIdleTimeout,
+
     /// The reconnect delay is zero.
     #[error("device.reconnect_delay must be greater than zero")]
     InvalidReconnectDelay,
@@ -167,6 +176,9 @@ impl Config {
         }
         if self.device.announcement_timeout.is_zero() {
             return Err(ConfigError::InvalidAnnouncementTimeout);
+        }
+        if self.device.pcm_idle_timeout.is_zero() {
+            return Err(ConfigError::InvalidPcmIdleTimeout);
         }
         if self.device.reconnect_delay.is_zero() {
             return Err(ConfigError::InvalidReconnectDelay);
@@ -228,6 +240,7 @@ mod tests {
         );
         assert_eq!(config.device.device_address, None);
         assert_eq!(config.device.pcm_port, 7355);
+        assert_eq!(config.device.pcm_idle_timeout, Duration::from_secs(5));
         assert_eq!(config.recording.silence_timeout, Duration::from_secs(300));
     }
 
@@ -241,6 +254,7 @@ mod tests {
                 [device]
                 device_address = "10.0.0.42"
                 announcement_timeout = "15s"
+                pcm_idle_timeout = "8s"
 
                 [recording]
                 silence_timeout = "2m 30s"
@@ -256,6 +270,7 @@ mod tests {
             Some(Ipv4Addr::new(10, 0, 0, 42))
         );
         assert_eq!(config.device.announcement_timeout, Duration::from_secs(15));
+        assert_eq!(config.device.pcm_idle_timeout, Duration::from_secs(8));
         assert_eq!(config.recording.silence_timeout, Duration::from_secs(150));
         assert_eq!(config.recording.silence_threshold, 8);
     }
@@ -277,6 +292,16 @@ mod tests {
         assert!(matches!(
             Config::parse(&source, Path::new("config.toml"), Path::new(".")),
             Err(ConfigError::InvalidSilenceThreshold { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_a_zero_pcm_idle_timeout() {
+        let source = format!("{MINIMAL}\n[device]\npcm_idle_timeout = \"0s\"");
+
+        assert!(matches!(
+            Config::parse(&source, Path::new("config.toml"), Path::new(".")),
+            Err(ConfigError::InvalidPcmIdleTimeout)
         ));
     }
 }

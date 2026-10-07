@@ -41,12 +41,20 @@ pub async fn run(config: Config) -> Result<()> {
     }
 
     let port = config.device.pcm_port;
+    let idle_timeout = config.device.pcm_idle_timeout;
     let reconnect_delay = config.device.reconnect_delay;
     let task_shutdown = shutdown.child_token();
     tasks.spawn(async move {
-        rx3::pcm::supervise(device_rx, port, reconnect_delay, event_tx, task_shutdown)
-            .await
-            .context("RX3 PCM supervisor failed")
+        rx3::pcm::supervise(
+            device_rx,
+            port,
+            idle_timeout,
+            reconnect_delay,
+            event_tx,
+            task_shutdown,
+        )
+        .await
+        .context("RX3 PCM supervisor failed")
     });
 
     let capture = CaptureService::new(

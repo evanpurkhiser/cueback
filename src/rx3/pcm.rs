@@ -13,6 +13,7 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt},
     net::TcpStream,
     sync::{mpsc, watch},
+    time::timeout,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -80,6 +81,10 @@ pub enum PcmError {
     /// A repeated configuration message disagrees with the initial handshake.
     #[error("stream config changed during a connection")]
     ConfigChanged,
+
+    /// No complete PCM block arrived before the connection watchdog expired.
+    #[error("PCM stream was idle for {0:?}")]
+    IdleTimeout(Duration),
 
     /// PCM bytes do not contain only complete interleaved frames.
     #[error("PCM payload has {actual} bytes, expected complete {frame_bytes}-byte frames")]
@@ -192,6 +197,7 @@ impl<R: AsyncRead + Unpin> PcmStream<R> {
 pub async fn supervise(
     mut device_rx: watch::Receiver<Option<Device>>,
     port: u16,
+    idle_timeout: Duration,
     reconnect_delay: Duration,
     event_tx: mpsc::Sender<Event>,
     shutdown: CancellationToken,
@@ -235,7 +241,7 @@ pub async fn supervise(
             handshake = PcmStream::handshake(stream) => handshake,
             _ = shutdown.cancelled() => return Ok(()),
         };
-        let mut stream = match handshake {
+        let stream = match handshake {
             Ok(stream) => stream,
             Err(error) => {
                 eprintln!("RX3 PCM handshake failed: {error}");
@@ -245,46 +251,91 @@ pub async fn supervise(
         };
 
         generation += 1;
-        if event_tx
-            .send(Event::AudioConnected {
-                generation,
-                format: stream.format(),
-            })
-            .await
-            .is_err()
-        {
-            return Ok(());
-        }
-
-        loop {
-            let block = tokio::select! {
-                block = stream.next_block() => block,
-                _ = shutdown.cancelled() => return Ok(()),
-            };
-
-            match block {
-                Ok(Some(block)) => {
-                    if event_tx.send(Event::Pcm(block)).await.is_err() {
-                        return Ok(());
-                    }
-                }
-                Ok(None) => break,
-                Err(error) => {
-                    eprintln!("RX3 PCM stream disconnected: {error}");
-                    break;
-                }
-            }
-        }
-
-        if event_tx
-            .send(Event::AudioDisconnected { generation })
-            .await
-            .is_err()
+        if relay_connection(stream, idle_timeout, generation, &event_tx, &shutdown).await
+            == RelayOutcome::Stop
         {
             return Ok(());
         }
         wait_to_retry(reconnect_delay, &shutdown).await;
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RelayOutcome {
+    Reconnect,
+    Stop,
+}
+
+/// Forward one handshaken connection into the device event stream.
+async fn relay_connection<R: AsyncRead + Unpin>(
+    mut stream: PcmStream<R>,
+    idle_timeout: Duration,
+    generation: u64,
+    event_tx: &mpsc::Sender<Event>,
+    shutdown: &CancellationToken,
+) -> RelayOutcome {
+    if !send_event(
+        event_tx,
+        Event::AudioConnected {
+            generation,
+            format: stream.format(),
+        },
+        shutdown,
+    )
+    .await
+    {
+        return RelayOutcome::Stop;
+    }
+
+    loop {
+        let block = tokio::select! {
+            block = next_block_with_timeout(&mut stream, idle_timeout) => block,
+            _ = shutdown.cancelled() => return RelayOutcome::Stop,
+        };
+
+        match block {
+            Ok(Some(block)) => {
+                if !send_event(event_tx, Event::Pcm(block), shutdown).await {
+                    return RelayOutcome::Stop;
+                }
+            }
+            Ok(None) => break,
+            Err(error) => {
+                eprintln!("RX3 PCM stream disconnected: {error}");
+                break;
+            }
+        }
+    }
+
+    if !send_event(event_tx, Event::AudioDisconnected { generation }, shutdown).await {
+        return RelayOutcome::Stop;
+    }
+
+    RelayOutcome::Reconnect
+}
+
+async fn send_event(
+    event_tx: &mpsc::Sender<Event>,
+    event: Event,
+    shutdown: &CancellationToken,
+) -> bool {
+    tokio::select! {
+        result = event_tx.send(event) => result.is_ok(),
+        _ = shutdown.cancelled() => false,
+    }
+}
+
+/// Read the next PCM block before the connection-level idle deadline.
+///
+/// Silent PCM is still a block and therefore keeps the connection alive. The
+/// timeout only detects a peer that has stopped delivering RX3A messages.
+async fn next_block_with_timeout<R: AsyncRead + Unpin>(
+    stream: &mut PcmStream<R>,
+    idle_timeout: Duration,
+) -> Result<Option<PcmBlock>, PcmError> {
+    timeout(idle_timeout, stream.next_block())
+        .await
+        .map_err(|_| PcmError::IdleTimeout(idle_timeout))?
 }
 
 async fn wait_to_retry(delay: Duration, shutdown: &CancellationToken) {
@@ -392,10 +443,18 @@ fn validate_pcm(payload: &[u8], format: StreamFormat) -> Result<(), PcmError> {
 
 #[cfg(test)]
 mod tests {
-    use tokio::io::{AsyncWriteExt, duplex};
+    use std::time::Duration;
 
-    use super::{CONFIG, PCM, PcmError, PcmStream};
-    use crate::audio::StreamFormat;
+    use tokio::{
+        io::{AsyncWriteExt, duplex},
+        sync::mpsc,
+    };
+    use tokio_util::sync::CancellationToken;
+
+    use super::{
+        CONFIG, PCM, PcmError, PcmStream, RelayOutcome, next_block_with_timeout, relay_connection,
+    };
+    use crate::{audio::StreamFormat, device::Event};
 
     fn message(kind: u8, sequence: u32, timestamp: u64, payload: &[u8]) -> Vec<u8> {
         let mut encoded = Vec::new();
@@ -476,5 +535,50 @@ mod tests {
             stream.next_block().await,
             Err(PcmError::MisalignedPcm { .. })
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn times_out_when_a_connected_stream_stops_delivering_blocks() {
+        let (mut writer, reader) = duplex(128);
+        writer.write_all(&config()).await.unwrap();
+        let mut stream = PcmStream::handshake(reader).await.unwrap();
+        let idle_timeout = Duration::from_secs(5);
+
+        assert!(matches!(
+            next_block_with_timeout(&mut stream, idle_timeout).await,
+            Err(PcmError::IdleTimeout(timeout)) if timeout == idle_timeout
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_connection_emits_a_disconnect_event() {
+        let (mut writer, reader) = duplex(128);
+        writer.write_all(&config()).await.unwrap();
+        let stream = PcmStream::handshake(reader).await.unwrap();
+        let shutdown = CancellationToken::new();
+        let (event_tx, mut event_rx) = mpsc::channel(4);
+        let relay_shutdown = shutdown.child_token();
+        let relay = tokio::spawn(async move {
+            relay_connection(
+                stream,
+                Duration::from_secs(5),
+                1,
+                &event_tx,
+                &relay_shutdown,
+            )
+            .await
+        });
+
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(Event::AudioConnected { generation: 1, .. })
+        ));
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(Event::AudioDisconnected { generation: 1 })
+        ));
+
+        assert_eq!(relay.await.unwrap(), RelayOutcome::Reconnect);
+        drop(writer);
     }
 }
