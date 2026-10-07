@@ -50,6 +50,72 @@ pub struct Device {
     pub ip_address: Ipv4Addr,
 }
 
+/// Remote-control protocol identity reported when a control stream connects.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ControlStreamInfo {
+    /// Prefix of the firmware executable build identity.
+    pub rbp_build_prefix: [u8; 4],
+
+    /// Firmware major version.
+    pub firmware_major: u16,
+
+    /// Firmware minor version.
+    pub firmware_minor: u16,
+
+    /// Revision of the remote-control schema.
+    pub schema_revision: u32,
+
+    /// CRC-32 of the control catalog.
+    pub schema_crc32: u32,
+
+    /// Number of controls declared by the catalog.
+    pub control_count: u32,
+}
+
+/// One source-timestamped control callback from the device.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ControlEvent {
+    /// Firmware control identifier.
+    pub key_code: u16,
+
+    /// Firmware operation code.
+    pub operation: u8,
+
+    /// Deck or mixer channel, or zero for global controls.
+    pub channel: u8,
+
+    /// Integer control value.
+    pub value: i32,
+
+    /// Raw IEEE-754 bits supplied by the firmware.
+    pub float_bits: u32,
+
+    /// Additional firmware-specific integer value.
+    pub auxiliary: i32,
+
+    /// Firmware source code distinguishing physical and remote input.
+    pub source: u8,
+
+    /// Firmware event flags, including queue loss before this event.
+    pub flags: u8,
+
+    /// Device `CLOCK_MONOTONIC` time captured at the input callback.
+    pub timestamp_us: u64,
+}
+
+/// Lifecycle and control events emitted by a device control adapter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ControlStreamEvent {
+    /// A remote-control stream completed its handshake and subscription.
+    Connected(ControlStreamInfo),
+
+    /// A physical or remotely injected control callback.
+    Control(ControlEvent),
+
+    /// The active remote-control stream ended.
+    Disconnected,
+}
+
 /// Changes and PCM data emitted by a device audio adapter.
 #[derive(Debug)]
 pub enum Event {
