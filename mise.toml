@@ -1,4 +1,5 @@
 [tools]
+ffmpeg = "9.0.1"
 rust = { version = "1.90", components = ["rustfmt", "clippy"] }
 prek = "0.4.9"
 shellcheck = "0.11.0"
