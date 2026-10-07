@@ -1,5 +1,5 @@
-//! Decoder and connection supervisor for the RX3A PCM stream exposed by
-//! `rbl-linkd`.
+//! Decoder and connection supervisor for the RX3A PCM stream exposed by the
+//! `rx3-toolkit` firmware addition.
 //!
 //! Each TCP connection starts with a configuration message and then carries
 //! timestamped blocks of interleaved signed 16-bit little-endian PCM. Integer
@@ -205,23 +205,8 @@ pub async fn supervise(
     let mut generation = 0;
 
     loop {
-        if shutdown.is_cancelled() {
+        let Some(device) = wait_for_device(&mut device_rx, &shutdown).await else {
             return Ok(());
-        }
-
-        let device = loop {
-            if let Some(device) = device_rx.borrow().clone() {
-                break device;
-            }
-
-            tokio::select! {
-                changed = device_rx.changed() => {
-                    if changed.is_err() {
-                        return Ok(());
-                    }
-                }
-                _ = shutdown.cancelled() => return Ok(()),
-            }
         };
 
         let address = SocketAddr::from((device.ip_address, port));
@@ -257,6 +242,30 @@ pub async fn supervise(
             return Ok(());
         }
         wait_to_retry(reconnect_delay, &shutdown).await;
+    }
+}
+
+/// Wait until discovery supplies a device or the supervisor should stop.
+async fn wait_for_device(
+    device_rx: &mut watch::Receiver<Option<Device>>,
+    shutdown: &CancellationToken,
+) -> Option<Device> {
+    loop {
+        if shutdown.is_cancelled() {
+            return None;
+        }
+        if let Some(device) = device_rx.borrow().clone() {
+            return Some(device);
+        }
+
+        tokio::select! {
+            changed = device_rx.changed() => {
+                if changed.is_err() {
+                    return None;
+                }
+            }
+            _ = shutdown.cancelled() => return None,
+        }
     }
 }
 
