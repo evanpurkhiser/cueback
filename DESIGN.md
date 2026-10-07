@@ -118,9 +118,10 @@ rekordbox library metadata ┘                      ▼
                       master.flac         playlist.m3u8    timeline/replay
 ```
 
-The collector owns live connections, clock alignment, rolling buffers, durable
-writes, and capture health. The processor operates on completed data and may be
-run again whenever segmentation or metadata logic improves.
+The collector owns live connections, clock alignment, bounded handoff between
+the network and encoder, durable writes, and capture health. The processor
+operates on completed data and may be run again whenever segmentation or
+metadata logic improves.
 
 The PCM and remote-control services each admit one client. Cueback therefore
 becomes their connection owner and must expose any future live consumers from
@@ -135,10 +136,43 @@ session state, journaling, process supervision, and processing. Modules can be
 split into separate crates when their ownership boundaries are demonstrated by
 the implementation.
 
-Audio encoding runs in a managed FFmpeg process. Cueback validates the RX3
-framing and continuity, sends raw PCM to FFmpeg through a bounded pipe, drains
-its diagnostics, and records its exit status. FLAC is the canonical lossless
-format for capture chunks and published recordings.
+Audio encoding runs in a managed FFmpeg process. Cueback validates RX3 framing,
+preserves its continuity fields, sends raw PCM to FFmpeg through a bounded
+pipe, drains its diagnostics, and records its exit status. FLAC is the
+canonical lossless format for capture chunks and published recordings.
+
+The initial binary has the following ownership boundaries:
+
+- `device` defines supported hardware, discovered device identity, and the
+  events consumed by the capture service;
+- `cli` selects the configuration file;
+- the private `rx3` adapter parses PRO DJ LINK announcements, owns the TCP
+  connection, and decodes RX3A messages;
+- `audio` owns PCM block types and audibility analysis;
+- `config` uses Figment to load and validate the service's TOML configuration;
+- `session` implements the synchronous live-session state machine;
+- `recorder` owns the FFmpeg child process and its files;
+- `service` applies session decisions to the recorder; and
+- `app` starts and supervises the long-lived Tokio tasks.
+
+Tokio provides sockets, bounded channels, process I/O, and timers. A root
+cancellation token coordinates graceful shutdown across the long-lived tasks.
+Audio analysis and session policy remain synchronous and independent of the
+async runtime.
+
+The PCM connection has its own idle watchdog because the source sends blocks
+continuously, including blocks containing digital silence. If no complete block
+arrives before the configured deadline, the adapter emits a disconnect and
+reconnects. This recovers from a half-open TCP connection without conflating
+transport health with the longer musical-silence policy.
+
+Runtime settings live in a TOML file selected with `--config`. The recordings
+directory, RX3 connection settings, FFmpeg selection, silence detection, and
+timing are validated before any service task starts. A relative recordings path
+resolves from the configuration file's directory so service behavior does not
+depend on its working directory. Clap owns only configuration-file selection
+and standard help and version output; Figment owns file loading and
+deserialization.
 
 ## Capture model
 
@@ -148,14 +182,14 @@ Cueback distinguishes three scopes.
 
 A device run begins when the RX3 becomes reachable and ends when it powers off
 or remains unreachable beyond a reconnect grace period. It records connection
-generations, restarts, health information, and events that occur outside an
-active recording.
+state changes, health information, and events that occur outside an active
+recording.
 
 ### Live session
 
-A live session is a durable ingestion window. It begins when non-silent audio
-starts and remains open while there is audio or meaningful activity. It may
-contain experimentation, pauses, and multiple finished mixes.
+A live session is a durable audio-ingestion window. It begins when non-silent
+audio starts and remains open until the silence timeout expires. It may contain
+experimentation, pauses, and multiple finished mixes.
 
 ### Processed session
 
@@ -166,29 +200,27 @@ name and outputs are accepted for normal use.
 
 ## Live-session lifecycle
 
-When the RX3 is online, the collector is armed rather than immediately creating
-a recording. It maintains a short rolling buffer of audio and recent events,
-initially expected to cover 30 to 60 seconds.
+PRO DJ LINK announcements establish device presence and supply the RX3 address.
+A successful PCM handshake establishes audio connectivity. An active PCM
+connection remains authoritative if announcements stop.
 
-Non-silent audio starts a live session. The rolling buffer is prepended so the
-opening transient and setup immediately before it are preserved.
+When the PCM stream is connected, the collector is armed without creating a
+recording. The first sample frame with either stereo channel above the silence
+threshold starts a live session and its FFmpeg process. The current PCM block
+is written in full, preserving the beginning of the signal without a large
+rolling buffer.
 
-A live session becomes eligible to end only when all of the following remain
-true:
+Every PCM block is analyzed and then written while a session is active. The
+last frame over the threshold advances `audio_ended_at`. When no later audible
+frame arrives before the configurable timeout, the recording ends. The initial
+timeout is five minutes and is measured in PCM frames rather than host time.
+The FLAC includes the quiet timeout and may contain up to one additional PCM
+block; later processing can trim it to the logical boundary.
 
-- PCM is below a conservative silence threshold;
-- neither deck is playing or on air;
-- no control, browse, load, cue, jog, fader, or effect activity occurs; and
-- no relevant deck or track state changes occur.
-
-The preliminary inactivity timeout is ten minutes. The collector waits for the
-timeout before finalizing, while the logical endpoint remains the last
-meaningful audio or event plus a short tail, initially ten seconds.
-
-If activity resumes before the timeout, the existing live session continues.
-If audio begins after finalization, a new live session starts with the rolling
-buffer prepended. Device loss ends the session after a short grace period so a
-brief Wi-Fi interruption does not create an unnecessary boundary.
+If audio resumes before the timeout, the quiet interval belongs to the current
+session. Audio after finalization starts a new session. A lost PCM connection
+is a discontinuity rather than silence and finalizes the current recording;
+future processing may join recordings separated by a recoverable network gap.
 
 These values are policy, not file-format assumptions. Completed device-run
 data should allow adjacent live sessions to be merged if the policy later
@@ -196,10 +228,14 @@ proves too aggressive.
 
 ## Durable capture
 
-The collector should transcode PCM to FLAC as it arrives. It should write
-bounded chunks, initially around five minutes each, instead of relying on one
-large file remaining open for an entire evening. Chunking limits crash damage
-and makes later splitting and merging straightforward.
+The collector transcodes PCM to FLAC as it arrives. An active recording is
+written to `.live/session-YYYY-MM-DD-HHMM-<short-id>.flac.part` beneath the
+configured recordings directory. After FFmpeg exits successfully, the file
+becomes a completed FLAC within `.live` and is immediately promoted to
+`session-YYYY-MM-DD-HHMM-<short-id>/master.flac`. Future processing can
+operate on the completed file within `.live` before promotion. A later
+durable-capture phase can introduce bounded chunks without changing the
+promoted layout.
 
 The event journal is append-only. It should survive abrupt termination and
 retain both normalized meaning and original protocol values. SQLite in WAL
@@ -210,7 +246,7 @@ Every capture records:
 
 - protocol and schema versions;
 - RX3 firmware and executable identity;
-- connection and stream generations;
+- connection state changes;
 - FLAC chunk boundaries and hashes;
 - PCM sequence, frame, and drop information;
 - remote-control queue-drop flags;
@@ -353,9 +389,9 @@ audio sample for sample. The captured FLAC remains the authoritative playback.
 
 ## Initial milestones
 
-1. Maintain the PCM connection and record recoverable FLAC chunks with gap
-   reporting.
-2. Implement the armed, active, idle, and finalized live-session lifecycle.
+1. Discover the RX3, maintain its PCM connection, and record live sessions to
+   FLAC using frame-clock silence detection.
+2. Persist session boundaries, connection state changes, and PCM gap reporting.
 3. Subscribe to physical control events and write an aligned durable journal.
 4. Resolve deck state and track identities through the available RX3 and
    `rbl-linkd` sources.
