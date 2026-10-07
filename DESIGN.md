@@ -153,9 +153,10 @@ The initial binary has the following ownership boundaries:
 - `service` applies session decisions to the recorder; and
 - `app` starts and supervises the long-lived Tokio tasks.
 
-Tokio provides sockets, bounded channels, process I/O, timers, and coordinated
-shutdown. Audio analysis and session policy remain synchronous and independent
-of the async runtime.
+Tokio provides sockets, bounded channels, process I/O, and timers. A root
+cancellation token coordinates graceful shutdown across the long-lived tasks.
+Audio analysis and session policy remain synchronous and independent of the
+async runtime.
 
 Runtime settings live in a TOML file selected with `--config`. The recordings
 directory, RX3 connection settings, FFmpeg selection, silence detection, and

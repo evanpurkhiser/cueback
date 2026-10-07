@@ -6,6 +6,7 @@ use tokio::{
     sync::watch,
     time::{Instant, MissedTickBehavior},
 };
+use tokio_util::sync::CancellationToken;
 
 const ANNOUNCEMENT_TYPE: u8 = 0x06;
 const HEADER: &[u8; 10] = b"Qspt1WmJOL";
@@ -72,7 +73,7 @@ pub async fn watch_rx3(
     socket: UdpSocket,
     timeout: Duration,
     device_tx: watch::Sender<Option<Device>>,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: CancellationToken,
 ) -> Result<(), AnnouncementError> {
     let mut buffer = [0; 2048];
     let mut last_seen = None;
@@ -99,11 +100,7 @@ pub async fn watch_rx3(
                     device_tx.send_replace(None);
                 }
             }
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() {
-                    return Ok(());
-                }
-            }
+            _ = shutdown.cancelled() => return Ok(()),
         }
     }
 }

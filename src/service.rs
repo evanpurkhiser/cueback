@@ -1,7 +1,8 @@
 use std::{path::PathBuf, time::Duration};
 
 use thiserror::Error;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     audio::{AnalyzeError, StreamFormat, analyze},
@@ -55,7 +56,7 @@ impl CaptureService {
     pub async fn run(
         mut self,
         mut events: mpsc::Receiver<Event>,
-        mut shutdown: watch::Receiver<bool>,
+        shutdown: CancellationToken,
     ) -> Result<(), ServiceError> {
         loop {
             tokio::select! {
@@ -65,11 +66,7 @@ impl CaptureService {
                     };
                     self.handle(event).await?;
                 }
-                changed = shutdown.changed() => {
-                    if changed.is_err() || *shutdown.borrow() {
-                        break;
-                    }
-                }
+                _ = shutdown.cancelled() => break,
             }
         }
 
@@ -162,9 +159,12 @@ fn duration_to_frames(duration: Duration, sample_rate: u32) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{path::PathBuf, time::Duration};
 
-    use super::duration_to_frames;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{CaptureService, duration_to_frames};
 
     #[test]
     fn converts_the_timeout_to_the_audio_clock() {
@@ -176,5 +176,20 @@ mod tests {
             duration_to_frames(Duration::from_millis(500), 44_100),
             22_050
         );
+    }
+
+    #[tokio::test]
+    async fn cancellation_stops_an_idle_service() {
+        let (_event_tx, event_rx) = mpsc::channel(1);
+        let shutdown = CancellationToken::new();
+        shutdown.cancel();
+        let service = CaptureService::new(
+            PathBuf::from("ffmpeg"),
+            PathBuf::from("recordings"),
+            Duration::from_secs(300),
+            0,
+        );
+
+        service.run(event_rx, shutdown).await.unwrap();
     }
 }

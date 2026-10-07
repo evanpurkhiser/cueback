@@ -6,6 +6,7 @@ use tokio::{
     sync::{mpsc, watch},
     task::JoinSet,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     config::Config,
@@ -14,7 +15,7 @@ use crate::{
 };
 
 pub async fn run(config: Config) -> Result<()> {
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let shutdown = CancellationToken::new();
     let (device_tx, device_rx) = watch::channel(config.device.device_address.map(fixed_device));
     let (event_tx, event_rx) = mpsc::channel(8);
     let mut tasks = JoinSet::new();
@@ -29,7 +30,7 @@ pub async fn run(config: Config) -> Result<()> {
                 )
             })?;
         let timeout = config.device.announcement_timeout;
-        let shutdown = shutdown_rx.clone();
+        let shutdown = shutdown.child_token();
         tasks.spawn(async move {
             rx3::announcement::watch_rx3(socket, timeout, device_tx, shutdown)
                 .await
@@ -39,9 +40,9 @@ pub async fn run(config: Config) -> Result<()> {
 
     let port = config.device.pcm_port;
     let reconnect_delay = config.device.reconnect_delay;
-    let shutdown = shutdown_rx.clone();
+    let task_shutdown = shutdown.child_token();
     tasks.spawn(async move {
-        rx3::pcm::supervise(device_rx, port, reconnect_delay, event_tx, shutdown)
+        rx3::pcm::supervise(device_rx, port, reconnect_delay, event_tx, task_shutdown)
             .await
             .context("RX3 PCM supervisor failed")
     });
@@ -52,9 +53,10 @@ pub async fn run(config: Config) -> Result<()> {
         config.recording.silence_timeout,
         config.recording.silence_threshold,
     );
+    let task_shutdown = shutdown.child_token();
     tasks.spawn(async move {
         capture
-            .run(event_rx, shutdown_rx)
+            .run(event_rx, task_shutdown)
             .await
             .context("capture service failed")
     });
@@ -73,7 +75,7 @@ pub async fn run(config: Config) -> Result<()> {
         }
     };
 
-    shutdown_tx.send_replace(true);
+    shutdown.cancel();
     while let Some(result) = tasks.join_next().await {
         result.context("a Cueback service task failed during shutdown")??;
     }

@@ -6,6 +6,7 @@ use tokio::{
     net::TcpStream,
     sync::{mpsc, watch},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     audio::{PcmBlock, StreamFormat},
@@ -136,12 +137,12 @@ pub async fn supervise(
     port: u16,
     reconnect_delay: Duration,
     event_tx: mpsc::Sender<Event>,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: CancellationToken,
 ) -> Result<(), PcmError> {
     let mut generation = 0;
 
     loop {
-        if *shutdown.borrow() {
+        if shutdown.is_cancelled() {
             return Ok(());
         }
 
@@ -156,37 +157,32 @@ pub async fn supervise(
                         return Ok(());
                     }
                 }
-                changed = shutdown.changed() => {
-                    if changed.is_err() || *shutdown.borrow() {
-                        return Ok(());
-                    }
-                }
+                _ = shutdown.cancelled() => return Ok(()),
             }
         };
 
         let address = SocketAddr::from((device.ip_address, port));
         let connected = tokio::select! {
             connected = TcpStream::connect(address) => connected,
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() {
-                    return Ok(());
-                }
-                continue;
-            }
+            _ = shutdown.cancelled() => return Ok(()),
         };
         let stream = match connected {
             Ok(stream) => stream,
             Err(error) => {
                 eprintln!("failed to connect to RX3 PCM stream at {address}: {error}");
-                wait_to_retry(reconnect_delay, &mut shutdown).await?;
+                wait_to_retry(reconnect_delay, &shutdown).await;
                 continue;
             }
         };
-        let mut stream = match PcmStream::handshake(stream).await {
+        let handshake = tokio::select! {
+            handshake = PcmStream::handshake(stream) => handshake,
+            _ = shutdown.cancelled() => return Ok(()),
+        };
+        let mut stream = match handshake {
             Ok(stream) => stream,
             Err(error) => {
                 eprintln!("RX3 PCM handshake failed: {error}");
-                wait_to_retry(reconnect_delay, &mut shutdown).await?;
+                wait_to_retry(reconnect_delay, &shutdown).await;
                 continue;
             }
         };
@@ -206,12 +202,7 @@ pub async fn supervise(
         loop {
             let block = tokio::select! {
                 block = stream.next_block() => block,
-                changed = shutdown.changed() => {
-                    if changed.is_err() || *shutdown.borrow() {
-                        return Ok(());
-                    }
-                    continue;
-                }
+                _ = shutdown.cancelled() => return Ok(()),
             };
 
             match block {
@@ -235,23 +226,14 @@ pub async fn supervise(
         {
             return Ok(());
         }
-        wait_to_retry(reconnect_delay, &mut shutdown).await?;
+        wait_to_retry(reconnect_delay, &shutdown).await;
     }
 }
 
-async fn wait_to_retry(
-    delay: Duration,
-    shutdown: &mut watch::Receiver<bool>,
-) -> Result<(), PcmError> {
+async fn wait_to_retry(delay: Duration, shutdown: &CancellationToken) {
     tokio::select! {
-        _ = tokio::time::sleep(delay) => Ok(()),
-        changed = shutdown.changed() => {
-            if changed.is_err() || *shutdown.borrow() {
-                return Ok(());
-            }
-
-            Ok(())
-        }
+        _ = tokio::time::sleep(delay) => {}
+        _ = shutdown.cancelled() => {}
     }
 }
 
