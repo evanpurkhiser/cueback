@@ -146,13 +146,15 @@ The initial binary has the following ownership boundaries:
 - `device` defines supported hardware, discovered device identity, and the
   events consumed by the capture service;
 - `cli` selects the configuration file;
-- the private `rx3` adapter parses PRO DJ LINK announcements, owns the TCP
-  connection, and decodes RX3A messages;
+- the private `rx3` adapter parses PRO DJ LINK announcements, owns the PCM and
+  remote-control TCP connections, and decodes their messages;
 - `audio` owns PCM block types and audibility analysis;
 - `config` uses Figment to load and validate the service's TOML configuration;
 - `session` implements the synchronous live-session state machine;
 - `recorder` owns the FFmpeg child process and its files;
-- `service` applies session decisions to the recorder; and
+- `timeline` owns the buffered append-only JSONL journal;
+- `storage` assigns and promotes companion session artifacts;
+- `service` applies session decisions to the recorders; and
 - `app` starts and supervises the long-lived Tokio tasks.
 
 Tokio provides sockets, bounded channels, process I/O, and timers. A root
@@ -165,6 +167,11 @@ continuously, including blocks containing digital silence. If no complete block
 arrives before the configured deadline, the adapter emits a disconnect and
 reconnects. This recovers from a half-open TCP connection without conflating
 transport health with the longer musical-silence policy.
+
+The remote-control stream may legitimately remain quiet. Its adapter probes a
+quiet connection with protocol PING messages and reconnects if the matching
+PONG does not arrive by the next keepalive deadline. This detects a half-open
+socket without treating the absence of control actions as a disconnect.
 
 Runtime settings live in a TOML file selected with `--config`. The recordings
 directory, RX3 connection settings, FFmpeg selection, silence detection, and
@@ -228,19 +235,24 @@ proves too aggressive.
 
 ## Durable capture
 
-The collector transcodes PCM to FLAC as it arrives. An active recording is
-written to `.live/session-YYYY-MM-DD-HHMM-<short-id>.flac.part` beneath the
-configured recordings directory. After FFmpeg exits successfully, the file
-becomes a completed FLAC within `.live` and is immediately promoted to
-`session-YYYY-MM-DD-HHMM-<short-id>/master.flac`. Future processing can
-operate on the completed file within `.live` before promotion. A later
-durable-capture phase can introduce bounded chunks without changing the
-promoted layout.
+The collector transcodes PCM to FLAC as it arrives and writes remote-control
+events to an append-only JSON Lines journal. Active companion files are named
+`.live/session-YYYY-MM-DD-HHMM-<short-id>.flac.part` and
+`.live/session-YYYY-MM-DD-HHMM-<short-id>.timeline.jsonl.part`. The journal is
+buffered and synchronized at bounded byte and time intervals. It starts with a
+small configurable control-event pre-roll so the action that begins audible
+playback is retained.
 
-The event journal is append-only. It should survive abrupt termination and
-retain both normalized meaning and original protocol values. SQLite in WAL
-mode is a candidate live store; completed captures can be archived as a compact
-JSON Lines stream, optionally compressed with Zstandard.
+After FFmpeg and the journal finish successfully, both files lose their
+`.part` suffix within `.live` and are promoted together to
+`session-YYYY-MM-DD-HHMM-<short-id>/master.flac` and `timeline.jsonl`. Future
+processing can operate on the completed files within `.live` before promotion.
+A later durable-capture phase can introduce bounded chunks without changing
+the promoted layout.
+
+The initial event journal retains original protocol values, connection state,
+firmware and schema identity, and the device's monotonic event timestamp.
+Semantic interpretation and compression belong to later processing.
 
 Every capture records:
 
@@ -266,9 +278,10 @@ boot or process identifier and a device monotonic timestamp. The collector can
 then establish a mapping between device time, host monotonic time, wall time,
 and PCM frame position.
 
-Until the protocols share an identity and clock sample, the collector can
-anchor connections using host monotonic timestamps. That is adequate for an
-initial visual replay but makes restarts and reconnections less precise.
+The first journal preserves the remote-control device timestamps without
+claiming audio-frame alignment. A PCM clock anchor is required to map them
+precisely to sample frames. Host timestamps can provide a weaker fallback, but
+cannot make restarts and reconnections precise.
 
 Each normalized event should retain all available clocks and the raw payload:
 
@@ -352,7 +365,7 @@ A preliminary published layout is:
   playlist.m3u8
   tracklist.cue
   session.json
-  timeline.jsonl.zst
+  timeline.jsonl
 ```
 
 The published FLAC is assembled and trimmed from the lossless capture chunks.
@@ -391,8 +404,10 @@ audio sample for sample. The captured FLAC remains the authoritative playback.
 
 1. Discover the RX3, maintain its PCM connection, and record live sessions to
    FLAC using frame-clock silence detection.
-2. Persist session boundaries, connection state changes, and PCM gap reporting.
-3. Subscribe to physical control events and write an aligned durable journal.
+2. Subscribe to physical control events and write a durable raw journal beside
+   each recording.
+3. Add PCM clock anchors and derive audio-aligned timeline events, session
+   boundaries, and gap reporting.
 4. Resolve deck state and track identities through the available RX3 and
    `rbl-linkd` sources.
 5. Produce a deterministic trimmed FLAC, audible-only M3U8, track timings, and
