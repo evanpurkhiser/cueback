@@ -8,5 +8,7 @@ pub mod device;
 pub mod recorder;
 pub mod service;
 pub mod session;
+pub mod storage;
+pub mod timeline;
 
 mod rx3;

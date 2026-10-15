@@ -22,6 +22,8 @@ use crate::{
     device::{Device, Event},
 };
 
+use super::{wait_for_device, wait_to_retry};
+
 const MAGIC: &[u8; 4] = b"RX3A";
 const VERSION: u8 = 1;
 const CONFIG: u8 = 1;
@@ -241,30 +243,6 @@ pub async fn supervise(
     }
 }
 
-/// Wait until discovery supplies a device or the supervisor should stop.
-async fn wait_for_device(
-    device_rx: &mut watch::Receiver<Option<Device>>,
-    shutdown: &CancellationToken,
-) -> Option<Device> {
-    loop {
-        if shutdown.is_cancelled() {
-            return None;
-        }
-        if let Some(device) = device_rx.borrow().clone() {
-            return Some(device);
-        }
-
-        tokio::select! {
-            changed = device_rx.changed() => {
-                if changed.is_err() {
-                    return None;
-                }
-            }
-            _ = shutdown.cancelled() => return None,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RelayOutcome {
     Reconnect,
@@ -339,13 +317,6 @@ async fn next_block_with_timeout<R: AsyncRead + Unpin>(
     timeout(idle_timeout, stream.next_block())
         .await
         .map_err(|_| PcmError::IdleTimeout(idle_timeout))?
-}
-
-async fn wait_to_retry(delay: Duration, shutdown: &CancellationToken) {
-    tokio::select! {
-        _ = tokio::time::sleep(delay) => {}
-        _ = shutdown.cancelled() => {}
-    }
 }
 
 /// Read one length-prefixed RX3A message from the byte stream.
